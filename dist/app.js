@@ -1,0 +1,1022 @@
+import {
+  backgrounds, weapons, spells, handToHand, stats, statNames, storyOptions,
+  initialState, normalizeState, selectedSkills, selectedNames, allSkills, allAttacks,
+  attackRowsForSheet, derived, carriedItems, hotlist, errors, missingDetails,
+  conflicts, stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
+} from './rules.js';
+import { attacks, damageEffects } from './details.js';
+import { downloadCharacterSheet } from './pdf.js';
+
+const STORAGE_KEY = 'dcc-crawler-builder-v1';
+const steps = [
+  ['identity', 'Identity'],
+  ['backgrounds', 'Backgrounds'],
+  ['combat', 'Combat'],
+  ['stats', 'Stats'],
+  ['story', 'Story'],
+  ['gear', 'Starting Gear'],
+  ['hotlist', 'Hotlist'],
+  ['attacks', 'Sheet Attacks'],
+  ['review', 'Review & PDF'],
+];
+
+let state = loadState();
+let activeStep = 'identity';
+let activeBackgroundStage = 0;
+let exporting = false;
+let draggedHotlistSlot = null;
+let touchHotlistDrag = null;
+
+const $ = (selector) => document.querySelector(selector);
+const main = $('#main');
+const nav = $('#steps');
+const summary = $('#summary');
+const notice = $('#notice');
+
+function esc(value = '') {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? normalizeState(JSON.parse(raw)) : initialState();
+  } catch {
+    return initialState();
+  }
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function setNotice(message, timeout = 2600) {
+  notice.textContent = message;
+  if (timeout) setTimeout(() => {
+    if (notice.textContent === message) notice.textContent = '';
+  }, timeout);
+}
+
+function setPath(path, value) {
+  const parts = path.split('.');
+  let cursor = state;
+  while (parts.length > 1) {
+    const key = parts.shift();
+    cursor = cursor[key];
+  }
+  cursor[parts[0]] = value;
+  saveState();
+}
+
+function navigate(step) {
+  const targetIndex = steps.findIndex(([id]) => id === step);
+  if (targetIndex === -1) return;
+  const currentIndex = steps.findIndex(([id]) => id === activeStep);
+
+  // Forward navigation cannot bypass required choices on the two multi-part
+  // pages that have explicit progression validation. Going backward remains free.
+  if (targetIndex > currentIndex && activeStep === 'backgrounds') {
+    const missingStage = firstIncompleteBackgroundStage(state);
+    if (missingStage !== -1) {
+      activeBackgroundStage = missingStage;
+      renderMain();
+      renderNav();
+      renderSummary();
+      const stage = (backgrounds[state.kind] || [])[missingStage];
+      setNotice(stage ? `Complete ${stage.name}: choose one background and exactly two Skills.` : 'Complete all background choices before continuing.');
+      return;
+    }
+  }
+  if (targetIndex > currentIndex && activeStep === 'stats') {
+    const statIssues = statValidationErrors(state);
+    if (statIssues.length) {
+      renderMain();
+      setNotice(statIssues[0]);
+      return;
+    }
+  }
+
+  activeStep = step;
+  render();
+  main.focus({ preventScroll: true });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function actions(previous, next, extra = '') {
+  return `<div class="actions">
+    <div>${previous ? `<button class="secondary" data-nav="${previous}">Back</button>` : ''}</div>
+    <div class="action-right">${extra}${next ? `<button class="primary" data-nav="${next}">Continue</button>` : ''}</div>
+  </div>`;
+}
+
+function sourceRef(text) {
+  return `<span class="ref">${esc(text)}</span>`;
+}
+
+function hotlistAssignments() {
+  const assignments = [];
+  const push = (key, slot, label, setSlot) => {
+    const n = Number(slot);
+    if (!Number.isInteger(n) || n < 1 || n > 10) return;
+    assignments.push({ key, slot: n, label, setSlot });
+  };
+
+  if (state.healSlot !== '') {
+    push('heal', state.healSlot, 'Heal', (slot) => { state.healSlot = String(slot); });
+  }
+  if (state.combatType === 'spell' && state.combat) {
+    if (state.spellSlot !== '') {
+      push('spell', state.spellSlot, state.combat, (slot) => { state.spellSlot = String(slot); });
+    }
+    if (state.potionsSlot !== '') {
+      push('potions', state.potionsSlot, '5 Standard Mana Potions', (slot) => { state.potionsSlot = String(slot); });
+    }
+  }
+  if (String(state.weaponLocation || '').startsWith('hotlist:')) {
+    const weaponName = state.customWeapon.trim()
+      ? `${state.customWeapon.trim()} (${state.combat})`
+      : state.combat || 'Starting weapon';
+    push('weapon', String(state.weaponLocation).split(':')[1], weaponName, (slot) => {
+      state.weaponLocation = `hotlist:${slot}`;
+    });
+  }
+  (state.items || []).forEach((item) => {
+    if (!String(item.location || '').startsWith('hotlist:')) return;
+    push(`item:${item.id}`, String(item.location).split(':')[1], item.name || 'Unnamed item', (slot) => {
+      item.location = `hotlist:${slot}`;
+    });
+  });
+  return assignments;
+}
+
+function hotlistOwner(slot, excludingKey = '') {
+  const n = Number(slot);
+  return hotlistAssignments().find((entry) => entry.slot === n && entry.key !== excludingKey) || null;
+}
+
+function hotlistSlotFromValue(value) {
+  const text = String(value ?? '');
+  if (text.startsWith('hotlist:')) return Number(text.split(':')[1]);
+  const n = Number(text);
+  return Number.isInteger(n) ? n : null;
+}
+
+function warnIfHotlistCollision(value, excludingKey = '') {
+  const slot = hotlistSlotFromValue(value);
+  if (!slot) return false;
+  const owner = hotlistOwner(slot, excludingKey);
+  if (!owner) return false;
+  setNotice(`Hotlist slot ${slot} is already being used by ${owner.label}. Choose another slot.`, 5200);
+  return true;
+}
+
+function hotlistSlotOptions(selected, currentKey = '', prefix = 'Slot') {
+  return Array.from({ length: 10 }, (_, i) => {
+    const slot = i + 1;
+    const owner = hotlistOwner(slot, currentKey);
+    const suffix = owner ? ` — in use: ${owner.label}` : '';
+    return `<option value="${slot}" ${String(selected) === String(slot) ? 'selected' : ''}>${prefix} ${slot}${esc(suffix)}</option>`;
+  }).join('');
+}
+
+function reorderHotlist(fromSlot, toSlot) {
+  const from = Number(fromSlot);
+  const to = Number(toSlot);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || from > 10 || to < 1 || to > 10 || from === to) return false;
+  const entries = hotlistAssignments();
+  const moving = entries.find((entry) => entry.slot === from);
+  if (!moving) return false;
+
+  // Treat the ten Hotlist slots as a real ordered list: the dragged slot moves
+  // to the target position and every intervening occupied entry shifts by one.
+  // Empty slots shift too conceptually, so gaps remain predictable.
+  if (from < to) {
+    entries.filter((entry) => entry.key !== moving.key && entry.slot > from && entry.slot <= to)
+      .forEach((entry) => entry.setSlot(entry.slot - 1));
+  } else {
+    entries.filter((entry) => entry.key !== moving.key && entry.slot >= to && entry.slot < from)
+      .forEach((entry) => entry.setSlot(entry.slot + 1));
+  }
+  moving.setSlot(to);
+  saveState();
+  return true;
+}
+
+function renderNav() {
+  const done = stepCompletion(state);
+  nav.innerHTML = `<div class="nav-heading">CRAWLER CREATION</div>${steps.map(([id, label], index) => {
+    const isDone = done[id];
+    return `<button type="button" data-nav="${id}" class="${id === activeStep ? 'active' : ''} ${isDone ? 'done' : ''}">
+      <span>${isDone ? '✓' : String(index + 1).padStart(2, '0')}</span>${esc(label)}
+    </button>`;
+  }).join('')}
+  <div class="nav-note">First draft: every book choice is player-selected. Book-accurate dice randomizers are intentionally deferred.</div>`;
+}
+
+function renderSummary() {
+  const d = derived(state);
+  const mods = d.mods;
+  const completion = stepCompletion(state);
+  const completedCount = Object.entries(completion).filter(([key, value]) => key !== 'review' && value).length;
+  const race = state.kind === 'human' ? 'Human' : state.kind === 'animal' ? state.species || 'Animal' : '—';
+  summary.innerHTML = `
+    <div class="aside-top">LIVE CRAWLER FILE</div>
+    <div class="crawler-name">${esc(state.name || 'Unnamed Crawler')}</div>
+    <div class="muted micro">#${esc(state.number)} · ${esc(race)}</div>
+    <div class="stat-strip">${stats.map((key) => `<div><small>${key.toUpperCase()}</small><b>${state.stats[key] || '—'}</b><span>${mods[key] ? `+${mods[key]}` : ''}</span></div>`).join('')}</div>
+    <dl>
+      <div><dt>Health</dt><dd>${d.health ?? '—'}</dd></div>
+      <div><dt>Mana</dt><dd>${d.maxMana ?? '—'}</dd></div>
+      <div><dt>Evade</dt><dd>${d.evadeDex ? `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}` : '—'}</dd></div>
+      <div><dt>Move / Step</dt><dd>${d.move} / ${d.step} ft</dd></div>
+      <div><dt>AI Favor</dt><dd>${d.aiFavor ?? '—'}</dd></div>
+      <div><dt>Size</dt><dd>${esc(d.size || '—')}</dd></div>
+    </dl>
+    <div class="divider"></div>
+    <div class="muted micro">Progress ${completedCount}/8</div>
+    <div class="meter ${completedCount === 8 ? 'ready' : ''}">${Array.from({ length: 8 }, (_, i) => `<i class="${i < completedCount ? 'filled' : ''}"></i>`).join('')}</div>
+    ${state.combat ? `<span class="tag">${esc(state.combat)}</span>` : ''}
+  `;
+}
+
+function identityStep() {
+  const animal = state.kind === 'animal';
+  return `
+    <p class="eyebrow">STEP 1 · IDENTITY & ORIGIN</p>
+    <h1>Who entered the dungeon?</h1>
+    <p class="intro">Name the crawler, then choose Human or the optional earth-animal path. Your crawler number is assigned once and cannot be rerolled or edited.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Identity</h2>${sourceRef('Character creation pp. 102-103')}</div>
+      <div class="fields">
+        <label class="field"><span class="field-label">Crawler name</span><input data-bind="name" value="${esc(state.name)}" maxlength="60" autocomplete="off"></label>
+        <label class="field"><span class="field-label">Gender / pronouns <span class="optional">optional</span></span><input data-bind="pronouns" value="${esc(state.pronouns)}" maxlength="50" autocomplete="off"><small>The rules explicitly allow this to be left blank.</small></label>
+      </div>
+      <label class="field">Assigned crawler number<input value="${esc(state.number)}" readonly aria-readonly="true"><small>Automatically generated once: 50,000-12,900,000. Starting a completely new crawler generates a new number.</small></label>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Origin</h2>${sourceRef('p. 102')}</div>
+      <div class="cards">
+        <button type="button" class="choice" data-origin="human" aria-pressed="${state.kind === 'human'}"><span class="symbol">H</span><strong>Human</strong><small>Normal starting path. Starts with AI Favor 1 and is typically Medium (4).</small></button>
+        <button type="button" class="choice" data-origin="animal" aria-pressed="${state.kind === 'animal'}"><span class="symbol">A</span><strong>Earth-based animal</strong><small>Optional path requiring GM permission. Starting AI Favor is spent, and the group is limited to one such crawler.</small></button>
+      </div>
+      ${animal ? `<div class="animal-fields">
+        <div class="fields">
+          <label class="field">Animal species<input data-bind="species" value="${esc(state.species)}" maxlength="50" placeholder="Cat, raccoon, dog, goat…"></label>
+          <label class="field">Size<select data-bind="size" data-rerender="true"><option value="">Choose size</option>${Object.entries(sizeNames).map(([value, label]) => `<option value="${value}" ${String(state.size) === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select><small>Standard animal creation allows sizes 2-4.</small></label>
+        </div>
+        <label class="check"><input type="checkbox" data-bind="animalPermission" ${state.animalPermission ? 'checked' : ''}> <span>My GM allows the animal crawler, and the group’s one-animal-crawler limit is satisfied.</span></label>
+        <div class="callout">The Enhanced Pet Biscuit / later Race transformation discussion does not supply a complete starting transformation builder here. This first draft records the earth-animal crawler you are creating.</div>
+      </div>` : ''}
+    </section>
+    ${actions(null, 'backgrounds')}
+  `;
+}
+
+function stageStatus(stageIndex) {
+  return backgroundStageComplete(state, stageIndex);
+}
+
+function backgroundsStep() {
+  if (!state.kind) {
+    return `<p class="eyebrow">STEP 2 · BACKGROUNDS</p><h1>Choose an origin first.</h1><p class="intro">Human and animal crawlers use different background tables.</p>${actions('identity', null, '<button class=\"primary\" data-action=\"continue-backgrounds\">Continue</button>')}`;
+  }
+  const stages = backgrounds[state.kind];
+  const stage = stages[activeBackgroundStage];
+  const selection = state.backgrounds[activeBackgroundStage];
+  const selectedOption = stage.options[selection.option];
+  const unavailable = selectedNames(state, activeBackgroundStage);
+  return `
+    <p class="eyebrow">STEP 2 · BACKGROUND SKILLS</p>
+    <h1>Your previous life left marks.</h1>
+    <p class="intro">Choose one background in each life stage, then choose exactly two of its three Skills. The book offers dice as an alternative; this first draft intentionally leaves all of these choices in your hands.</p>
+    <div class="stage-tabs">${stages.map((item, index) => `<button type="button" data-stage="${index}" class="${index === activeBackgroundStage ? 'active' : ''}">${stageStatus(index) ? '✓ ' : ''}${esc(item.name)} · Rank ${item.rank}</button>`).join('')}</div>
+    <section class="panel">
+      <div class="panel-head"><h2>${esc(stage.name)} background</h2>${sourceRef(`Table ${stage.table} · p. ${stage.page}`)}</div>
+      <div class="bg-grid">${stage.options.map((option, index) => `<button type="button" class="choice compact" data-background="${index}" aria-pressed="${selection.option === index}"><strong>${esc(option.name)}</strong><small>${option.skills.map((x) => `${esc(x.name)} (${esc(x.stat)})`).join(' · ')}</small></button>`).join('')}</div>
+      ${selectedOption ? `<div class="skill-choice-box"><h3>Pick exactly two Skills</h3><p class="muted micro">Both start at Rank ${stage.rank}. Duplicate background/combat Skills are not allowed.</p><div class="skill-picks">${selectedOption.skills.map((skill) => {
+        const picked = selection.picks.includes(skill.name);
+        const disabled = !picked && unavailable.has(skill.name);
+        return `<button type="button" data-skill="${esc(skill.name)}" aria-pressed="${picked}" ${disabled ? 'disabled title="Already selected elsewhere"' : ''}>${esc(skill.name)} <small>${esc(skill.stat)}</small>${disabled ? ' · already used' : ''}</button>`;
+      }).join('')}</div></div>` : '<p class="muted">Choose a background above to reveal its Skills.</p>'}
+    </section>
+    ${selectedSkills(state).some((x) => x.name === 'Performance') ? `<section class="panel"><div class="panel-head"><h2>Performance specialty</h2>${sourceRef('Skill entry p. 196')}</div><label class="field">Starting performance type<input data-bind="performance" value="${esc(state.performance)}" maxlength="80" placeholder="Comedy, guitar, singing, acting…"><small>The Performance Skill tells you to choose a type to specialize in as your starting type.</small></label></section>` : ''}
+    ${actions('identity', null, '<button class="primary" data-action="continue-backgrounds">Continue</button>')}
+  `;
+}
+
+function optionCard(name, info, disabled = false) {
+  const selected = state.combat === name;
+  return `<button type="button" class="choice combat-choice" data-combat="${esc(name)}" aria-pressed="${selected}" ${disabled ? 'disabled' : ''}>
+    <strong>${esc(name)}</strong><small>${esc(info)}</small>${disabled ? '<span class="disabled-note">Already selected as a background Skill</span>' : ''}
+  </button>`;
+}
+
+function combatStep() {
+  const used = new Set(selectedSkills(state).map((x) => x.name));
+  const type = state.combatType;
+  let options = '';
+  if (type === 'weapon') {
+    options = weapons.map((name) => {
+      const a = attacks[name];
+      const range = a.range === 5 ? 'Melee' : `${a.range} ft`;
+      return optionCard(name, `${a.stat} to hit · ${a.dice}${a.damageStat ? ` + ${a.damageStat}` : ''} ${a.effect} · ${range}`, used.has(name) && state.combat !== name);
+    }).join('');
+  } else if (type === 'spell') {
+    options = spells.map((name) => {
+      const a = attacks[name];
+      const range = a.range === 5 ? 'Melee' : `${a.range} ft`;
+      return optionCard(name, `${a.mana} Mana · ${a.stat} · ${a.dice} + ${a.damageStat} ${a.effect} · ${range}`, used.has(name) && state.combat !== name);
+    }).join('');
+  } else if (type === 'hand') {
+    options = Object.entries(handToHand).map(([name, effect]) => {
+      const a = attacks[name];
+      return optionCard(name, `${a.stat} · ${a.dice} + ${a.damageStat} ${a.effect} · paired with ${effect}`, used.has(name) && state.combat !== name);
+    }).join('');
+  }
+
+  const selectedAttack = attacks[state.combat];
+  return `
+    <p class="eyebrow">STEP 3 · COMBAT</p>
+    <h1>How do you plan to survive?</h1>
+    <p class="intro">Every Human starts with Unarmed Combat Rank 3; an animal starts with Slice Attack Rank 3. You choose the second Rank 3 combat option.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Second combat option</h2>${sourceRef('pp. 108-109; Skills pp. 177-183, Spells pp. 202-213')}</div>
+      <div class="cards three">
+        <button type="button" class="choice" data-combat-type="weapon" aria-pressed="${type === 'weapon'}"><strong>Weapon</strong><small>Choose a listed weapon Skill. You may give it a unique real-world name while using listed mechanics.</small></button>
+        <button type="button" class="choice" data-combat-type="spell" aria-pressed="${type === 'spell'}"><strong>Attack Spell</strong><small>Choose one of the seven low-Mana starting options. Intelligence must be at least 4.</small></button>
+        <button type="button" class="choice" data-combat-type="hand" aria-pressed="${type === 'hand'}"><strong>Hand-to-hand</strong><small>Choose the listed hand-to-hand Skill and its paired Damage Effect.</small></button>
+      </div>
+      ${type ? `<div class="combat-options">${options}</div>` : ''}
+      ${type === 'weapon' && state.combat ? `<label class="field unique-weapon">Unique weapon name <span class="optional">optional</span><input data-bind="customWeapon" value="${esc(state.customWeapon)}" maxlength="55" placeholder="Example: Tire Iron"><small>If entered, the sheet will show “${esc(state.customWeapon || 'Tire Iron')} (${esc(state.combat)})”; the selected listed weapon supplies the mechanics.</small></label>` : ''}
+      ${type === 'spell' ? '<div class="callout">Choosing an attack Spell grants five Standard Mana Potions. You will place the Spell and the potions in Hotlist slots later. All crawlers also know Heal.</div>' : ''}
+      ${type === 'hand' && state.combat ? `<div class="callout"><strong>${esc(handToHand[state.combat])}</strong> is the paired Damage Effect. The creation wording about both hand-to-hand Skills starting at Rank 3 is not perfectly explicit; this builder uses Rank 3 only after you confirm that interpretation with your GM on Review.</div>` : ''}
+      ${selectedAttack?.notes ? `<p class="micro muted"><strong>Restriction:</strong> ${esc(selectedAttack.notes)}</p>` : ''}
+    </section>
+    ${actions('backgrounds', 'stats')}
+  `;
+}
+
+function statsStep() {
+  const d = derived(state);
+  const statIssues = statValidationErrors(state);
+  const duplicateValues = new Set();
+  const counts = new Map();
+  for (const key of stats) {
+    const value = Number(state.stats[key]);
+    if (!Number.isFinite(value) || ![2, 3, 4, 5, 6].includes(value)) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  for (const [value, count] of counts) if (count > 1) duplicateValues.add(value);
+  return `
+    <p class="eyebrow">STEP 4 · STATS</p>
+    <h1>Assign the Standard Array.</h1>
+    <p class="intro">For this first draft, use the player-chosen Standard Array: assign 2, 3, 4, 5, and 6 once each. The book’s dice method will be added later as an explicit optional mode.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Starting Stats</h2>${sourceRef('pp. 109-110 · Table 20')}</div>
+      ${stats.map((key) => {
+        const value = Number(state.stats[key]);
+        const duplicate = duplicateValues.has(value);
+        return `<div class="stat-row ${duplicate ? 'invalid' : ''}"><div><strong>${esc(statNames[key])}</strong><small>${key}</small></div><select data-stat="${key}" aria-invalid="${duplicate}"><option value="">—</option>${[2,3,4,5,6].map((n) => `<option value="${n}" ${value === n ? 'selected' : ''}>${n}</option>`).join('')}</select><b>${d.mods[key] ? `+${d.mods[key]}` : '—'}</b></div>`;
+      }).join('')}
+      ${statIssues.length ? `<div class="validation-box" role="alert"><strong>Finish the Standard Array before continuing.</strong><ul>${statIssues.map((issue) => `<li>${esc(issue)}</li>`).join('')}</ul></div>` : '<p class="success micro">Standard Array is valid: each value from 2 through 6 is used exactly once.</p>'}
+    </section>
+    <section class="panel derived-panel">
+      <div class="panel-head"><h2>Calculated automatically</h2>${sourceRef('pp. 110-112')}</div>
+      <div class="derived-grid">
+        <div><small>Health</small><strong>${d.health ?? '—'}</strong><span>CON Mod × 10</span></div>
+        <div><small>Max Mana</small><strong>${d.maxMana ?? '—'}</strong><span>Enhanced INT score</span></div>
+        <div><small>Evade</small><strong>${d.evadeDex ? `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}` : '—'}</strong><span>DEX Mod${d.evadeBuff ? ' + Dodge' : ''}</span></div>
+        <div><small>Move / Step</small><strong>20 / 10</strong><span>feet</span></div>
+      </div>
+    </section>
+    <div class="actions">
+      <div><button class="secondary" data-nav="combat">Back</button></div>
+      <div class="action-right"><button class="primary" data-action="continue-stats" ${statIssues.length ? 'disabled aria-disabled="true"' : ''}>Continue</button></div>
+    </div>
+  `;
+}
+
+function storyField(key, label, table, page) {
+  const mode = state.storyMode[key] || '';
+  const current = state.story[key] || '';
+  const predefined = storyOptions[key];
+  const currentIndex = predefined.indexOf(current);
+  const effectiveMode = mode || (currentIndex >= 0 ? 'table' : current ? 'custom' : '');
+  return `<section class="panel story-panel">
+    <div class="panel-head"><h2>${esc(label)}</h2>${sourceRef(`Table ${table} · p. ${page}`)}</div>
+    <div class="story-mode">
+      <button type="button" data-story-mode="${key}:table" class="secondary small ${effectiveMode === 'table' ? 'selected' : ''}">Choose from the table</button>
+      <button type="button" data-story-mode="${key}:custom" class="secondary small ${effectiveMode === 'custom' ? 'selected' : ''}">Write my own</button>
+    </div>
+    ${effectiveMode === 'table' ? `<label class="field">Choose ${esc(label)}<select data-story-select="${key}"><option value="">Select one</option>${predefined.map((option) => `<option value="${esc(option)}" ${current === option ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select></label>` : ''}
+    ${effectiveMode === 'custom' ? `<label class="field">Your ${esc(label)}<textarea data-story-custom="${key}" maxlength="350" placeholder="Write the character’s fictional ${esc(label.toLowerCase())}…">${esc(current)}</textarea></label>` : ''}
+    ${!effectiveMode ? '<p class="muted micro">Choose a table prompt or write your own character detail.</p>' : ''}
+  </section>`;
+}
+
+function storyStep() {
+  return `
+    <p class="eyebrow">STEP 5 · PAST TRAUMA, LOOSE ENDS & REGRETS</p>
+    <h1>Tell the GM what stories you want.</h1>
+    <p class="intro">Choose one printed prompt or write your own for each category. These are fictional character details; the builder does not ask you to disclose your own trauma.</p>
+    ${storyField('trauma', 'Past Trauma', 22, 114)}
+    ${storyField('looseEnd', 'Loose End', 23, 114)}
+    ${storyField('regret', 'Regret', 24, 114)}
+    ${actions('stats', 'gear')}
+  `;
+}
+
+function locationOptions(value, includeAccessories = true, currentKey = '') {
+  const locations = [
+    ['inventory', 'Inventory'],
+    ['holding', 'Hands / Holding'],
+    ...(includeAccessories ? [['accessories', 'Accessories']] : []),
+    ...Array.from({ length: 10 }, (_, i) => {
+      const slot = i + 1;
+      const owner = hotlistOwner(slot, currentKey);
+      return [`hotlist:${slot}`, `Hotlist ${slot}${owner ? ` — in use: ${owner.label}` : ''}`];
+    }),
+  ];
+  return `<option value="">Choose location</option>${locations.map(([v, label]) => `<option value="${v}" ${value === v ? 'selected' : ''}>${label}</option>`).join('')}`;
+}
+
+function itemEditor(item, index) {
+  const weirdCount = state.items.filter((x) => x.kind === 'weird').length;
+  const removable = item.kind === 'weird' && weirdCount > 1;
+  return `<div class="item-card">
+    <div class="item-head"><strong>${item.kind === 'useful' ? 'Interesting / useful item' : 'Weird stuff'}</strong>${removable ? `<button type="button" class="icon-button" data-remove-item="${esc(item.id)}" aria-label="Remove item">×</button>` : ''}</div>
+    <div class="fields item-fields">
+      <label class="field item-field item-field-name"><span class="field-label">Item</span><input data-item-index="${index}" data-item-field="name" value="${esc(item.name)}" maxlength="80"></label>
+      <label class="field item-field item-field-qty"><span class="field-label">Quantity</span><input type="number" min="1" step="1" data-item-index="${index}" data-item-field="qty" value="${esc(item.qty)}"></label>
+      <label class="field item-field item-field-location"><span class="field-label">Where is it carried?</span><select data-item-index="${index}" data-item-field="location">${locationOptions(item.location, true, `item:${item.id}`)}</select></label>
+      <label class="field item-field item-field-note"><span class="field-label">Short note <span class="optional">optional</span></span><input data-item-index="${index}" data-item-field="notes" value="${esc(item.notes || '')}" maxlength="100"></label>
+    </div>
+  </div>`;
+}
+
+function gearStep() {
+  const weapon = state.combatType === 'weapon' && state.combat;
+  return `
+    <p class="eyebrow">STEP 6 · STARTING GEAR</p>
+    <h1>What were you carrying when the world ended?</h1>
+    <p class="intro">The creation rules give you worn clothes, a weapon from your chosen weapon combat Skill when applicable, one interesting/useful item, and weird stuff. Your GM decides what is plausible.</p>
+    ${weapon ? `<section class="panel"><div class="panel-head"><h2>Starting weapon</h2>${sourceRef('p. 113')}</div><p><strong>${esc(state.customWeapon.trim() ? `${state.customWeapon.trim()} (${state.combat})` : state.combat)}</strong></p><label class="field">Where is the weapon?<select data-bind="weaponLocation" data-rerender="true">${locationOptions(state.weaponLocation, false, 'weapon')}</select></label></section>` : ''}
+    <section class="panel">
+      <div class="panel-head"><h2>Clothing</h2>${sourceRef('p. 113')}</div>
+      <p class="muted micro">You are wearing a set of clothes. Recording each piece on the sheet is optional, so leave any fields blank you do not care to track.</p>
+      <div class="clothing-grid">${['Head','Torso','Arms','Hands','Legs','Feet'].map((slot) => `<label class="field">${slot}<input data-clothing="${slot}" value="${esc(state.clothing[slot] || '')}" maxlength="100"></label>`).join('')}</div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Other starting possessions</h2>${sourceRef('pp. 113-115')}</div>
+      ${state.items.map(itemEditor).join('')}
+      <div class="item-add-row"><button type="button" class="secondary small" data-add-item="weird">+ Add weird stuff</button></div>
+      <div class="callout">The book does not provide automatic starting money, armor, mounts, or ammunition quantities. This builder will not invent them. Add only possessions your character and GM agree make sense.</div>
+    </section>
+    ${actions('story', 'hotlist')}
+  `;
+}
+
+function hotlistStep() {
+  const slots = hotlist(state);
+  const assignments = hotlistAssignments();
+  const assignmentBySlot = new Map(assignments.map((entry) => [entry.slot, entry]));
+  return `
+    <p class="eyebrow">STEP 7 · HOTLIST</p>
+    <h1>Put fast-access things where you want them.</h1>
+    <p class="intro">The Hotlist has ten slots. Different entries cannot share a slot. Up to 999 of the same named item may occupy one slot.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Spell placement</h2>${sourceRef('creation p. 111; spell rules p. 202')}</div>
+      <div class="fields">
+        <label class="field">Heal <span class="optional">optional Hotlist placement</span><select data-bind="healSlot" data-rerender="true"><option value="">Not in Hotlist</option>${hotlistSlotOptions(state.healSlot, 'heal')}</select><small>Every crawler knows Heal. Not placing it here does not remove the Spell.</small></label>
+        ${state.combatType === 'spell' ? `<label class="field">${esc(state.combat)} <strong>required</strong><select data-bind="spellSlot" data-rerender="true"><option value="">Choose slot</option>${hotlistSlotOptions(state.spellSlot, 'spell')}</select></label>
+        <label class="field">5 Standard Mana Potions <strong>required</strong><select data-bind="potionsSlot" data-rerender="true"><option value="">Choose slot</option>${hotlistSlotOptions(state.potionsSlot, 'potions')}</select></label>` : ''}
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Current Hotlist</h2>${sourceRef('10 slots')}</div>
+      <div class="hotlist-preview" aria-label="Hotlist slots">${slots.map((text, index) => {
+        const slot = index + 1;
+        const entry = assignmentBySlot.get(slot);
+        return `<div class="hotlist-row ${text ? 'occupied' : ''}" data-hotlist-slot="${slot}" ${text ? 'draggable="true"' : ''}>
+          <span class="hotlist-number">${slot}</span>
+          <div class="hot-slot ${text ? 'occupied' : ''}">${text ? esc(text).replaceAll('\n','<br>') : '<em>Empty</em>'}</div>
+          ${entry ? `<div class="hotlist-controls">
+            <button type="button" class="hotlist-drag-handle" aria-label="Drag ${esc(entry.label)} to another Hotlist slot" title="Drag to reorder">⋮⋮</button>
+            <button type="button" class="hotlist-move" data-hotlist-move="${slot}:-1" ${slot === 1 ? 'disabled' : ''} aria-label="Move ${esc(entry.label)} up one Hotlist slot">↑</button>
+            <button type="button" class="hotlist-move" data-hotlist-move="${slot}:1" ${slot === 10 ? 'disabled' : ''} aria-label="Move ${esc(entry.label)} down one Hotlist slot">↓</button>
+          </div>` : '<div class="hotlist-controls" aria-hidden="true"></div>'}
+        </div>`;
+      }).join('')}</div>
+      <p class="muted micro">Drag an occupied row to reorder the Hotlist. On touch devices or with a keyboard, use the ↑ and ↓ buttons. Starting gear can also be moved into or out of the Hotlist on the Starting Gear step.</p>
+    </section>
+    ${actions('gear', 'attacks')}
+  `;
+}
+
+function attacksStep() {
+  const available = allAttacks(state);
+  const chosen = state.combat;
+  const selectedSet = new Set(state.attackSheet || []);
+  if (chosen) selectedSet.add(chosen);
+  return `
+    <p class="eyebrow">STEP 8 · FRONT-PAGE ATTACKS</p>
+    <h1>Choose what appears in the five Attack rows.</h1>
+    <p class="intro">Your chosen second combat option is always written to the front-page Attacks table. The starting Unarmed/Slice entry and any extra combat Skills from backgrounds can be included or omitted here. All learned Skills still appear on page 3.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Attack rows</h2>${sourceRef('sheet page 1; creation pp. 108-110')}</div>
+      <div class="attack-select-list">${available.map((attack) => {
+        const mandatory = attack.name === chosen;
+        const checked = mandatory || selectedSet.has(attack.name);
+        const rank = attack.rank;
+        const hit = attack.stat === 'None' ? '—' : `${attack.stat} +${statMod(Number(state.stats[attack.stat])) || '?'}`;
+        const dmg = `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}`;
+        return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${mandatory ? ' · required' : ''}</small></span></label>`;
+      }).join('')}</div>
+      <div class="callout">The supplied sheet has five rows. If you know more than five Attack Skills, choose which non-required ones are most useful to show here.</div>
+    </section>
+    ${actions('hotlist', 'review')}
+  `;
+}
+
+function conflictReview() {
+  const items = conflicts(state);
+  if (!items.length) return '';
+  return `<section class="panel warning-panel"><div class="panel-head"><h2>Printed source discrepancies</h2>${sourceRef('Background tables vs. detailed Skill entries')}</div>
+    <p class="muted">The supplied PDFs print different Stat associations for these selected Skills. The builder will not silently choose one. Record the ruling your GM wants.</p>
+    ${items.map((item) => `<fieldset class="ruling"><legend>${esc(item.name)}</legend>
+      <label><input type="radio" name="ruling-${esc(item.name)}" data-ruling="${esc(item.name)}" value="${esc(item.tableStat)}" ${state.rulings[item.name] === item.tableStat ? 'checked' : ''}> Background table: ${esc(item.tableStat)} (p. ${item.tablePage})</label>
+      <label><input type="radio" name="ruling-${esc(item.name)}" data-ruling="${esc(item.name)}" value="${esc(item.detailStat)}" ${state.rulings[item.name] === item.detailStat ? 'checked' : ''}> Detailed Skill entry: ${esc(item.detailStat)} (p. ${item.page})</label>
+    </fieldset>`).join('')}
+    <label class="check"><input type="checkbox" data-bind="rulingsApproved" ${state.rulingsApproved ? 'checked' : ''}> <span>These selections match the GM’s ruling for this crawler.</span></label>
+  </section>`;
+}
+
+function handReview() {
+  if (state.combatType !== 'hand') return '';
+  return `<section class="panel warning-panel"><div class="panel-head"><h2>Hand-to-hand Damage Effect interpretation</h2>${sourceRef('creation p. 109')}</div>
+    <p>The builder treats <strong>${esc(handToHand[state.combat] || '')}</strong> as Rank 3 alongside the selected hand-to-hand Attack Skill. The supplied creation wording can be read that way, but is not perfectly explicit.</p>
+    <label class="check"><input type="checkbox" data-bind="handEffectApproved" ${state.handEffectApproved ? 'checked' : ''}> <span>My GM accepts this Rank 3 interpretation.</span></label>
+  </section>`;
+}
+
+function reviewStep() {
+  const issues = errors(state);
+  const notes = missingDetails(state);
+  const d = derived(state);
+  const skills = allSkills(state);
+  const attacksForSheet = attackRowsForSheet(state);
+  return `
+    <p class="eyebrow">STEP 9 · REVIEW & EXPORT</p>
+    <h1>${issues.length ? 'Finish the crawler.' : 'Crawler ready for the sheet.'}</h1>
+    <p class="intro">Nothing is randomly assigned except the crawler number. Mandatory calculations are derived automatically from your choices.</p>
+    ${conflictReview()}
+    ${handReview()}
+    <section class="panel ${issues.length ? 'warning-panel' : 'success-panel'}">
+      <div class="panel-head"><h2>${issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'} to resolve` : 'Validation passed'}</h2>${sourceRef('Source-bound validation')}</div>
+      ${issues.length ? `<ul class="issues">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="success">All required choices for this first-draft starting crawler are complete.</p>'}
+    </section>
+    <section class="panel review-grid-panel">
+      <div class="review-grid">
+        <div><h3>Identity</h3><p>${esc(state.name)} · #${esc(state.number)}<br>${state.kind === 'human' ? 'Human' : esc(state.species)} · ${esc(d.size)}</p></div>
+        <div><h3>Vitals</h3><p>Health ${d.health ?? '—'} · Mana ${d.maxMana ?? '—'}<br>Move ${d.move} · Step ${d.step} · AI Favor ${d.aiFavor ?? '—'}</p></div>
+        <div class="wide"><h3>Skills (${skills.length})</h3><p>${skills.map((x) => `${esc(x.label || x.name)} R${x.rank}`).join(' · ')}</p></div>
+        <div class="wide"><h3>Front-page Attacks (${attacksForSheet.length}/5)</h3><p>${attacksForSheet.map((x) => esc(x.label || x.name)).join(' · ') || 'None selected'}</p></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Source limitations / GM notes</h2></div>
+      <ul class="issues neutral">${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+    </section>
+    <div class="actions">
+      <button class="secondary" data-nav="attacks">Back</button>
+      <div class="action-right">
+        <button class="secondary danger-button" data-action="new-crawler">Start a new crawler</button>
+        <button class="primary" data-action="download" ${issues.length || exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : 'Download filled character sheet'}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMain() {
+  const renderers = {
+    identity: identityStep,
+    backgrounds: backgroundsStep,
+    combat: combatStep,
+    stats: statsStep,
+    story: storyStep,
+    gear: gearStep,
+    hotlist: hotlistStep,
+    attacks: attacksStep,
+    review: reviewStep,
+  };
+  main.innerHTML = renderers[activeStep]();
+}
+
+function render() {
+  renderNav();
+  renderMain();
+  renderSummary();
+}
+
+function resetDownstreamAfterOrigin() {
+  state.backgrounds = Array.from({ length: 4 }, () => ({ option: null, picks: [] }));
+  state.combatType = '';
+  state.combat = '';
+  state.customWeapon = '';
+  state.rulings = {};
+  state.rulingsApproved = false;
+  state.attackSheet = [];
+  state.weaponLocation = '';
+  state.spellSlot = '';
+  state.potionsSlot = '';
+  state.handEffectApproved = false;
+}
+
+nav.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-nav]');
+  if (button) navigate(button.dataset.nav);
+});
+
+main.addEventListener('click', async (event) => {
+  const navButton = event.target.closest('[data-nav]');
+  if (navButton) return navigate(navButton.dataset.nav);
+
+  const continueBackgrounds = event.target.closest('[data-action="continue-backgrounds"]');
+  if (continueBackgrounds) {
+    if (!state.kind) {
+      setNotice('Choose Human or the earth-animal path before selecting backgrounds.');
+      return navigate('identity');
+    }
+    const missingStage = firstIncompleteBackgroundStage(state);
+    if (missingStage !== -1) {
+      activeBackgroundStage = missingStage;
+      renderMain();
+      renderNav();
+      renderSummary();
+      const stage = backgrounds[state.kind][missingStage];
+      setNotice(`Complete ${stage.name}: choose one background and exactly two Skills.`);
+      requestAnimationFrame(() => {
+        document.querySelector('.stage-tabs .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+        document.querySelector('.skill-choice-box, .bg-grid')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+      return;
+    }
+    return navigate('combat');
+  }
+
+  const continueStats = event.target.closest('[data-action="continue-stats"]');
+  if (continueStats) {
+    const statIssues = statValidationErrors(state);
+    if (statIssues.length) {
+      setNotice(statIssues[0]);
+      renderMain();
+      return;
+    }
+    return navigate('story');
+  }
+
+  const origin = event.target.closest('[data-origin]');
+  if (origin) {
+    if (state.kind !== origin.dataset.origin) {
+      state.kind = origin.dataset.origin;
+      state.species = '';
+      state.size = state.kind === 'human' ? '4' : '';
+      state.animalPermission = false;
+      resetDownstreamAfterOrigin();
+      activeBackgroundStage = 0;
+      saveState();
+    }
+    return render();
+  }
+
+  const stage = event.target.closest('[data-stage]');
+  if (stage) {
+    activeBackgroundStage = Number(stage.dataset.stage);
+    return renderMain();
+  }
+
+  const background = event.target.closest('[data-background]');
+  if (background) {
+    const index = Number(background.dataset.background);
+    state.backgrounds[activeBackgroundStage] = { option: index, picks: [] };
+    state.rulings = {};
+    state.rulingsApproved = false;
+    state.attackSheet = [];
+    saveState();
+    return render();
+  }
+
+  const skill = event.target.closest('[data-skill]');
+  if (skill && !skill.disabled) {
+    const name = skill.dataset.skill;
+    const selection = state.backgrounds[activeBackgroundStage];
+    if (selection.picks.includes(name)) selection.picks = selection.picks.filter((x) => x !== name);
+    else if (selection.picks.length < 2) selection.picks.push(name);
+    else setNotice('Choose exactly two Skills. Remove one before selecting another.');
+    state.rulings = {};
+    state.rulingsApproved = false;
+    state.attackSheet = [];
+    saveState();
+    return render();
+  }
+
+  const combatType = event.target.closest('[data-combat-type]');
+  if (combatType) {
+    if (state.combatType !== combatType.dataset.combatType) {
+      state.combatType = combatType.dataset.combatType;
+      state.combat = '';
+      state.customWeapon = '';
+      state.weaponLocation = '';
+      state.spellSlot = '';
+      state.potionsSlot = '';
+      state.handEffectApproved = false;
+      state.attackSheet = [];
+      saveState();
+    }
+    return render();
+  }
+
+  const combat = event.target.closest('[data-combat]');
+  if (combat && !combat.disabled) {
+    state.combat = combat.dataset.combat;
+    state.customWeapon = '';
+    state.weaponLocation = '';
+    state.spellSlot = '';
+    state.potionsSlot = '';
+    state.handEffectApproved = false;
+    state.attackSheet = [];
+    saveState();
+    return render();
+  }
+
+  const storyMode = event.target.closest('[data-story-mode]');
+  if (storyMode) {
+    const [key, mode] = storyMode.dataset.storyMode.split(':');
+    state.storyMode[key] = mode;
+    state.story[key] = '';
+    saveState();
+    return renderMain();
+  }
+
+  const addItem = event.target.closest('[data-add-item]');
+  if (addItem) {
+    const id = `item-${Date.now()}-${state.items.length}`;
+    state.items.push({ id, name: '', qty: 1, kind: addItem.dataset.addItem, location: 'inventory', notes: '' });
+    saveState();
+    return renderMain();
+  }
+
+  const removeItem = event.target.closest('[data-remove-item]');
+  if (removeItem) {
+    state.items = state.items.filter((item) => item.id !== removeItem.dataset.removeItem);
+    saveState();
+    return render();
+  }
+
+  const hotlistMove = event.target.closest('[data-hotlist-move]');
+  if (hotlistMove && !hotlistMove.disabled) {
+    const [fromText, deltaText] = hotlistMove.dataset.hotlistMove.split(':');
+    const from = Number(fromText);
+    const to = Math.max(1, Math.min(10, from + Number(deltaText)));
+    if (reorderHotlist(from, to)) {
+      render();
+      setNotice(`Moved Hotlist slot ${from} to slot ${to}.`);
+    }
+    return;
+  }
+
+  const newCrawler = event.target.closest('[data-action="new-crawler"]');
+  if (newCrawler) {
+    if (confirm('Start over? This clears the current crawler and assigns a new crawler number.')) {
+      state = initialState();
+      localStorage.removeItem(STORAGE_KEY);
+      activeStep = 'identity';
+      activeBackgroundStage = 0;
+      saveState();
+      render();
+      setNotice('New crawler file opened.');
+    }
+    return;
+  }
+
+  const download = event.target.closest('[data-action="download"]');
+  if (download && !download.disabled) {
+    exporting = true;
+    renderMain();
+    try {
+      await downloadCharacterSheet(state);
+      setNotice('Character sheet generated.');
+    } catch (error) {
+      console.error(error);
+      setNotice(`PDF export failed: ${error.message || error}`, 6000);
+    } finally {
+      exporting = false;
+      renderMain();
+    }
+  }
+});
+
+main.addEventListener('change', (event) => {
+  const target = event.target;
+  if (target.matches('[data-bind]')) {
+    const value = target.type === 'checkbox' ? target.checked : target.value;
+    const hotlistKeys = new Set(['healSlot', 'spellSlot', 'potionsSlot', 'weaponLocation']);
+    if (hotlistKeys.has(target.dataset.bind)) {
+      const key = target.dataset.bind === 'healSlot'
+        ? 'heal'
+        : target.dataset.bind === 'spellSlot'
+          ? 'spell'
+          : target.dataset.bind === 'potionsSlot'
+            ? 'potions'
+            : 'weapon';
+      if (warnIfHotlistCollision(value, key)) {
+        target.value = state[target.dataset.bind] ?? '';
+        return;
+      }
+    }
+    setPath(target.dataset.bind, value);
+    if (target.type === 'checkbox' || target.dataset.rerender) render();
+    else { renderNav(); renderSummary(); }
+    return;
+  }
+  if (target.matches('[data-stat]')) {
+    state.stats[target.dataset.stat] = target.value;
+    saveState();
+    render();
+    return;
+  }
+  if (target.matches('[data-story-select]')) {
+    state.story[target.dataset.storySelect] = target.value;
+    saveState();
+    renderNav(); renderSummary();
+    return;
+  }
+  if (target.matches('[data-item-field]')) {
+    const index = Number(target.dataset.itemIndex);
+    const field = target.dataset.itemField;
+    if (field === 'location') {
+      const item = state.items[index];
+      if (item && warnIfHotlistCollision(target.value, `item:${item.id}`)) {
+        target.value = item.location ?? '';
+        return;
+      }
+    }
+    state.items[index][field] = field === 'qty' ? Number(target.value) : target.value;
+    saveState();
+    if (field === 'location') render();
+    else { renderNav(); renderSummary(); }
+    return;
+  }
+  if (target.matches('[data-clothing]')) {
+    state.clothing[target.dataset.clothing] = target.value;
+    saveState();
+    return;
+  }
+  if (target.matches('[data-attack-row]')) {
+    const name = target.dataset.attackRow;
+    const set = new Set(state.attackSheet || []);
+    if (target.checked) {
+      const maxOptional = state.combat ? 4 : 5;
+      if (set.size >= maxOptional) {
+        target.checked = false;
+        setNotice('The front-page Attacks table has five rows, and your chosen combat option already uses one.');
+        return;
+      }
+      set.add(name);
+    } else set.delete(name);
+    state.attackSheet = [...set];
+    saveState();
+    renderNav(); renderSummary();
+    return;
+  }
+  if (target.matches('[data-ruling]')) {
+    state.rulings[target.dataset.ruling] = target.value;
+    state.rulingsApproved = false;
+    saveState();
+    render();
+  }
+});
+
+main.addEventListener('input', (event) => {
+  const target = event.target;
+  if (target.matches('[data-bind]') && target.type !== 'checkbox' && target.tagName !== 'SELECT') {
+    setPath(target.dataset.bind, target.value);
+    renderNav(); renderSummary();
+    return;
+  }
+  if (target.matches('[data-story-custom]')) {
+    state.story[target.dataset.storyCustom] = target.value;
+    saveState();
+    renderNav(); renderSummary();
+    return;
+  }
+  if (target.matches('[data-item-field]') && target.tagName !== 'SELECT') {
+    const index = Number(target.dataset.itemIndex);
+    const field = target.dataset.itemField;
+    state.items[index][field] = field === 'qty' ? Number(target.value) : target.value;
+    saveState();
+    renderNav(); renderSummary();
+    return;
+  }
+  if (target.matches('[data-clothing]')) {
+    state.clothing[target.dataset.clothing] = target.value;
+    saveState();
+  }
+});
+
+function clearHotlistDragStyles() {
+  main.querySelectorAll('.hotlist-row.drag-over, .hotlist-row.dragging').forEach((row) => {
+    row.classList.remove('drag-over', 'dragging');
+  });
+}
+
+main.addEventListener('dragstart', (event) => {
+  const row = event.target.closest('.hotlist-row[draggable="true"]');
+  if (!row) return;
+  draggedHotlistSlot = Number(row.dataset.hotlistSlot);
+  row.classList.add('dragging');
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(draggedHotlistSlot));
+  }
+});
+
+main.addEventListener('dragover', (event) => {
+  if (!draggedHotlistSlot) return;
+  const row = event.target.closest('.hotlist-row[data-hotlist-slot]');
+  if (!row) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  main.querySelectorAll('.hotlist-row.drag-over').forEach((item) => item.classList.remove('drag-over'));
+  row.classList.add('drag-over');
+});
+
+main.addEventListener('drop', (event) => {
+  if (!draggedHotlistSlot) return;
+  const row = event.target.closest('.hotlist-row[data-hotlist-slot]');
+  if (!row) return;
+  event.preventDefault();
+  const from = draggedHotlistSlot;
+  const to = Number(row.dataset.hotlistSlot);
+  draggedHotlistSlot = null;
+  clearHotlistDragStyles();
+  if (reorderHotlist(from, to)) {
+    render();
+    setNotice(`Moved Hotlist slot ${from} to slot ${to}.`);
+  }
+});
+
+main.addEventListener('dragend', () => {
+  draggedHotlistSlot = null;
+  clearHotlistDragStyles();
+});
+
+// Native HTML drag-and-drop is inconsistent on touch browsers, so the drag
+// handle also supports Pointer Events. The arrow buttons remain a keyboard and
+// touch-friendly fallback.
+main.addEventListener('pointerdown', (event) => {
+  const handle = event.target.closest('.hotlist-drag-handle');
+  if (!handle || event.pointerType === 'mouse') return;
+  const row = handle.closest('.hotlist-row[data-hotlist-slot]');
+  if (!row) return;
+  event.preventDefault();
+  touchHotlistDrag = { pointerId: event.pointerId, from: Number(row.dataset.hotlistSlot), over: Number(row.dataset.hotlistSlot) };
+  row.classList.add('dragging');
+  handle.setPointerCapture?.(event.pointerId);
+});
+
+main.addEventListener('pointermove', (event) => {
+  if (!touchHotlistDrag || touchHotlistDrag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const hit = document.elementFromPoint(event.clientX, event.clientY);
+  const row = hit?.closest?.('.hotlist-row[data-hotlist-slot]');
+  if (!row) return;
+  touchHotlistDrag.over = Number(row.dataset.hotlistSlot);
+  main.querySelectorAll('.hotlist-row.drag-over').forEach((item) => item.classList.remove('drag-over'));
+  row.classList.add('drag-over');
+});
+
+function finishTouchHotlistDrag(event) {
+  if (!touchHotlistDrag || touchHotlistDrag.pointerId !== event.pointerId) return;
+  const { from, over } = touchHotlistDrag;
+  touchHotlistDrag = null;
+  clearHotlistDragStyles();
+  if (reorderHotlist(from, over)) {
+    render();
+    setNotice(`Moved Hotlist slot ${from} to slot ${over}.`);
+  }
+}
+
+main.addEventListener('pointerup', finishTouchHotlistDrag);
+main.addEventListener('pointercancel', (event) => {
+  if (!touchHotlistDrag || touchHotlistDrag.pointerId !== event.pointerId) return;
+  touchHotlistDrag = null;
+  clearHotlistDragStyles();
+});
+
+render();
