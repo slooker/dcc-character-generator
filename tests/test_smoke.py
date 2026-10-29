@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import re
-import threading
 import unittest
 from pathlib import Path
-from urllib.request import urlopen
 
 try:
     from pypdf import PdfReader
@@ -17,14 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 
 
-def load_serve_module():
-    spec = importlib.util.spec_from_file_location("crawler_serve", ROOT / "serve.py")
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load serve.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -34,50 +23,47 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-class ServerSmokeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        serve = load_serve_module()
-        cls.httpd = serve.make_server("127.0.0.1", 0)
-        cls.port = cls.httpd.server_address[1]
-        cls.base_url = f"http://127.0.0.1:{cls.port}"
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
+class DockerPackagingTests(unittest.TestCase):
+    def test_compose_publishes_default_port_and_builds_local_image(self) -> None:
+        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("crawler-builder:", compose)
+        self.assertIn("dockerfile: Dockerfile", compose)
+        self.assertIn('${PORT:-4173}:80', compose)
+        self.assertIn("restart: unless-stopped", compose)
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=2)
+    def test_docker_image_serves_dist_with_nginx(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        nginx = (ROOT / "nginx.conf").read_text(encoding="utf-8")
+        self.assertIn("FROM nginx:alpine", dockerfile)
+        self.assertIn("COPY dist/ /usr/share/nginx/html/", dockerfile)
+        self.assertIn("EXPOSE 80", dockerfile)
+        self.assertIn("HEALTHCHECK", dockerfile)
+        self.assertIn("root /usr/share/nginx/html;", nginx)
+        self.assertIn("try_files $uri $uri/ /index.html;", nginx)
+        self.assertIn("try_files $uri =404;", nginx)
+        self.assertIn('Cache-Control "no-store"', nginx)
 
-    def test_root_and_required_assets_return_200(self) -> None:
-        # This is the regression test for the reported localhost:4173 404.
-        for path in (
-            "/",
-            "/app.js",
-            "/rules.js",
-            "/details.js",
-            "/pdf.js",
-            "/style.css",
-            "/character-sheet.pdf",
-            "/vendor/pdf-lib.min.js",
+    def test_python_web_server_was_removed(self) -> None:
+        self.assertFalse((ROOT / "serve.py").exists())
+
+    def test_dockerignore_keeps_rule_sources_out_of_runtime_image(self) -> None:
+        ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        for name in (
+            "character-generation-rules.pdf",
+            "skills-and-spells.pdf",
+            "fillable-character-sheet.pdf",
+            "tests/",
+            "tmp/",
         ):
-            with self.subTest(path=path):
-                with urlopen(self.base_url + path, timeout=5) as response:
-                    self.assertEqual(response.status, 200)
-                    self.assertGreater(len(response.read()), 0)
-
-    def test_server_is_pinned_to_project_dist_directory(self) -> None:
-        serve = load_serve_module()
-        self.assertEqual(serve.DIST_DIR, DIST.resolve())
-        self.assertTrue((serve.DIST_DIR / "index.html").is_file())
+            self.assertIn(name, ignored)
 
 
 class ProjectStructureTests(unittest.TestCase):
-    def test_no_npm_test_scaffold_remains(self) -> None:
+    def test_python_test_scaffold_remains_without_npm(self) -> None:
         self.assertFalse((ROOT / "package.json").exists())
         self.assertFalse((ROOT / "tests" / "smoke.mjs").exists())
         self.assertTrue((ROOT / "tests" / "test_smoke.py").exists())
+        self.assertTrue((ROOT / "requirements-dev.txt").exists())
 
     def test_index_references_existing_assets(self) -> None:
         index = (DIST / "index.html").read_text(encoding="utf-8")
@@ -230,6 +216,19 @@ class ProjectStructureTests(unittest.TestCase):
         ):
             self.assertIn(marker, app)
 
+
+
+    def test_new_crawler_reset_defers_rerender_and_restores_text_focus(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        # Regression for Firefox/input-focus failure after accepting the native
+        # Start a new crawler confirmation. The fresh form is created on the
+        # next event-loop turn and the name input is explicitly focused.
+        self.assertIn("document.activeElement?.blur?.()", app)
+        self.assertIn("draggedHotlistSlot = null", app)
+        self.assertIn("touchHotlistDrag = null", app)
+        self.assertIn("window.setTimeout(() => {", app)
+        self.assertIn("state = initialState()", app)
+        self.assertIn("main.querySelector('[data-bind=\"name\"]')?.focus()", app)
 
 
 @unittest.skipIf(PdfReader is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")

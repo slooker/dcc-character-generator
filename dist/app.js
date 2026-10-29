@@ -793,13 +793,26 @@ main.addEventListener('click', async (event) => {
   const newCrawler = event.target.closest('[data-action="new-crawler"]');
   if (newCrawler) {
     if (confirm('Start over? This clears the current crawler and assigns a new crawler number.')) {
-      state = initialState();
-      localStorage.removeItem(STORAGE_KEY);
-      activeStep = 'identity';
-      activeBackgroundStage = 0;
-      saveState();
-      render();
-      setNotice('New crawler file opened.');
+      // Rebuilding the form synchronously while the click/confirm interaction is
+      // still unwinding can leave newly-created text inputs unable to receive
+      // keyboard focus in some browsers (notably Firefox). Finish the current
+      // event first, then create and focus the fresh crawler form.
+      document.activeElement?.blur?.();
+      draggedHotlistSlot = null;
+      touchHotlistDrag = null;
+      exporting = false;
+      window.setTimeout(() => {
+        localStorage.removeItem(STORAGE_KEY);
+        state = initialState();
+        activeStep = 'identity';
+        activeBackgroundStage = 0;
+        saveState();
+        render();
+        requestAnimationFrame(() => {
+          main.querySelector('[data-bind="name"]')?.focus();
+        });
+        setNotice('New crawler file opened.');
+      }, 0);
     }
     return;
   }

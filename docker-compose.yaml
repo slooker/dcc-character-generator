@@ -1,0 +1,9 @@
+services:
+  crawler-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dcc-character-generator
+    ports:
+      - "${PORT:-4173}:80"
+    restart: unless-stopped

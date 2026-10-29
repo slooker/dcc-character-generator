@@ -30,17 +30,16 @@ The flow covers:
 8. Player choice of which learned attacks appear in the sheet's five front-page attack rows.
 9. Validation, source-discrepancy rulings, and filled PDF download.
 
-The exported PDF preserves the original four-page fillable AcroForm rather than replacing or flattening it.
-Starting exported sheets default **Level** to `1` and **Floor** to `1`.
+The exported PDF preserves the original four-page fillable AcroForm rather than replacing or flattening it. Starting exported sheets default **Level** to `1` and **Floor** to `1`.
 
-## Run locally
+## Run with Docker Compose
 
-The project includes a small Python server that always serves the correct `dist` directory, regardless of the directory your terminal happens to be in.
+Docker Compose is the supported way to run the site.
 
 From the project folder:
 
 ```powershell
-python serve.py
+docker compose up --build -d
 ```
 
 Then open:
@@ -49,17 +48,40 @@ Then open:
 http://localhost:4173/
 ```
 
-You can also choose a different port:
+To watch the container logs:
 
 ```powershell
-python serve.py --port 8080
+docker compose logs -f
 ```
 
-Do **not** open `dist/index.html` directly with `file://`; the browser needs HTTP access to fetch the PDF template and JavaScript modules.
+To stop it:
+
+```powershell
+docker compose down
+```
+
+### Use a different host port
+
+The container always listens on port 80 internally. Set `PORT` to publish a different host port:
+
+```powershell
+$env:PORT=8080
+docker compose up --build -d
+```
+
+Then open `http://localhost:8080/`.
+
+There is no Python web server and no npm runtime. Nginx serves the static files from `dist/` inside the container.
+
+After changing files under `dist/`, rebuild the image:
+
+```powershell
+docker compose up --build -d
+```
 
 ## Tests
 
-There is no npm test setup and no `package.json`. The test runner is Python as well.
+Tests remain Python, as requested. They do not run the application server.
 
 Install the small PDF test dependency once:
 
@@ -73,24 +95,7 @@ Run the tests with:
 python -m unittest discover -s tests -v
 ```
 
-The Python smoke suite checks:
-
-- Background Continue returns the player to the first unfinished life stage until all four background/Skill selections are complete. Forward sidebar navigation cannot bypass this check.
-- Stats cannot continue until 2, 3, 4, 5, and 6 are each assigned exactly once (plus the Intelligence requirement for a starting attack Spell). Forward sidebar navigation cannot bypass this check either.
-- The name and gender/pronouns controls use matching label rows so their inputs align.
-- Starting-possession controls reflow from four columns to two columns to one column as their available width shrinks, rather than squeezing labels and fields out of alignment.
-- Trying to place a Spell, potion stack, weapon, or item into an occupied Hotlist slot is rejected immediately with a warning.
-- Hotlist entries expose drag-and-drop ordering plus up/down controls, and reordering updates the underlying Spell/item/weapon slot assignment.
-
-- `/` and all required static assets return HTTP 200, preventing the localhost 404 regression.
-- The server is pinned to this project's `dist` folder instead of depending on the terminal's working directory.
-- The npm test scaffold is gone.
-- The current crawler-number bounds and first-draft choice-driven contract are present in the shipped rules module.
-- Critical validation guards and PDF field mappings are present.
-- `dist/character-sheet.pdf` is byte-for-byte the supplied fillable sheet.
-- The template is four pages, still has its AcroForm, and contains the critical fields used by the exporter.
-
-The application itself remains browser JavaScript; these tests deliberately avoid introducing a second Node/npm toolchain just to run the test command.
+The Python smoke suite checks the character-builder validation behavior, PDF field/template assumptions, responsive markup, Hotlist behavior, and the Docker/Compose packaging needed to serve `dist/` through Nginx.
 
 ## Planned second pass: book-accurate rolling
 
