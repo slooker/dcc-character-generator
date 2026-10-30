@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 # rules.js and the data modules it imports, in dependency order.
-MODULES = ("details.js", "races-classes.js", "rules.js")
+MODULES = ("details.js", "races-classes.js", "equipment.js", "rules.js")
 
 
 def load_rules() -> "MiniRacer":

@@ -1,5 +1,8 @@
 import { attacks, utilitySkills, damageEffects } from './details.js';
 import { races, classes, skillCatalog } from './races-classes.js';
+import {
+  gearItems, gearName, gearStatBonuses, gearSkillBonuses, gearDr, equipmentErrors, normalizeGearItem, bonusText,
+} from './equipment.js';
 
 // Source-bound rules for the first-draft builder.
 // Approved sources only:
@@ -217,6 +220,14 @@ export function initialState() {
       { id: 'weird-1', name: '', qty: 1, kind: 'weird', location: 'inventory', notes: '' },
     ],
     weaponLocation: '',
+    weaponTwoHanded: false,
+    // Equipment step (dcc-gear.pdf): items found after creation, gold and Misc. Junk.
+    gear: [],
+    // Starting possessions removed on the Equipment step, by kind. Creation
+    // still counts them (exactly one useful item, at least one weird item).
+    removedStarting: { useful: 0, weird: 0 },
+    gold: '',
+    miscJunk: '',
     healSlot: '',
     spellSlot: '',
     potionsSlot: '',
@@ -259,6 +270,8 @@ export function normalizeState(raw) {
   merged.classChoices = raw.classChoices && typeof raw.classChoices === 'object' ? raw.classChoices : {};
   merged.levelUps = Array.isArray(raw.levelUps) ? raw.levelUps : [];
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
+  merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
+  merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
   return merged;
 }
 
@@ -552,8 +565,42 @@ export function skillsWithRaceClass(state, options = {}) {
   return computeSkills(state, options).skills;
 }
 
+// Skills as the sheet shows them: computeSkills plus bonuses from equipped gear.
+// - Rank bonuses obey the Skill's Rank limit (15, or 20 where a Race/Class
+//   allows it) like any other Ranks; the excess does nothing (user ruling). A
+//   Rank bonus to a Skill the crawler lacks grants it while equipped.
+// - Check bonuses aren't Ranks: they add to the Skill's checks, uncapped, and
+//   are listed in the Skill's notes.
+// Neither counts toward Race/Class prerequisites (those use computeSkills).
 export function allSkills(state) {
-  return computeSkills(state).skills;
+  const skills = computeSkills(state).skills;
+  const find = (name) => skills.find((x) => x.name.toLowerCase() === name.toLowerCase());
+  gearSkillBonuses(state).forEach(({ name, ranks, type, item }) => {
+    const sign = ranks > 0 ? '+' : '';
+    if (type === 'check') {
+      const skill = find(name);
+      if (!skill) return;
+      skill.checkBonus = (skill.checkBonus || 0) + ranks;
+      skill.notes = [skill.notes, `${sign}${ranks} to checks (Gear: ${item}).`].filter(Boolean).join(' ');
+      return;
+    }
+    let skill = find(name);
+    if (!skill) {
+      if (ranks < 1) return;
+      skill = { ...catalogSkill(name, 0, ''), source: '', notes: '' };
+      skills.push(skill);
+    }
+    const before = skill.rank;
+    const after = Math.max(0, Math.min(Math.max(before, rankLimit(state, skill.name)), before + ranks));
+    skill.rank = after;
+    skill.gearRanks = (skill.gearRanks || 0) + (after - before);
+    skill.source = [skill.source, `Gear: ${item} ${sign}${ranks}`].filter(Boolean).join('; ');
+    if (after - before < ranks && ranks > 0) {
+      const lost = ranks - (after - before);
+      skill.notes = [skill.notes, `${lost} gear Rank${lost === 1 ? '' : 's'} over the Rank ${rankLimit(state, skill.name)} limit ha${lost === 1 ? 's' : 've'} no effect.`].filter(Boolean).join(' ');
+    }
+  });
+  return skills.filter((x) => x.rank > 0 || !x.gearRanks);
 }
 
 // Per skill-up entry: { skill, before, after, wasted, cap }.
@@ -591,9 +638,13 @@ export function unenhancedStats(state) {
   return out;
 }
 
-// Only equipment changes Enhanced Stats; no equipped gear grants Stat bonuses yet.
+// Only equipment changes Enhanced Stats: Unenhanced plus equipped gear bonuses
+// (items in the Inventory or Hotlist give none, p. 98), never below 1.
 export function enhancedStats(state) {
-  return unenhancedStats(state);
+  const out = unenhancedStats(state);
+  const bonus = gearStatBonuses(state);
+  stats.forEach((key) => { if (out[key] !== '') out[key] = Math.max(1, out[key] + bonus[key]); });
+  return out;
 }
 
 // Time-of-day Stats (Lajabless, p. 136): additions first, then halving/doubling
@@ -615,7 +666,9 @@ export function dayNightStats(state) {
 
 export function damageResistance(state) {
   const parts = raceClassEffects(state).filter((x) => x.type === 'dr').map((x) => ({ value: x.value, from: x.from }));
-  return { parts, armor: 0, total: parts.reduce((sum, x) => sum + x.value, 0) };
+  // Race/Class DR goes in the sheet's Buffs box; equipped gear DR in its Armor box.
+  const armor = gearDr(state);
+  return { parts, armor, total: armor + parts.reduce((sum, x) => sum + x.value, 0) };
 }
 
 // Choices still needed for the chosen Race/Class, with a readable prompt.
@@ -784,6 +837,8 @@ export function derived(state) {
     floor: currentFloor(state),
     size: raceSize || (state.kind === 'human' ? 'Medium (4)' : sizeNames[String(state.size)] || ''),
     dr: damageResistance(state),
+    // Lifting limit: Strength score x 15 lb (p. 98).
+    lift: enhanced.Str === '' ? null : Number(enhanced.Str) * 15,
   };
 }
 
@@ -799,10 +854,27 @@ export function weaponItem(state) {
   };
 }
 
+// Everything carried: the starting weapon and possessions, gear from the
+// Equipment step, then gold and Misc. Junk as Inventory rows.
 export function carriedItems(state) {
   const items = (state.items || []).filter((x) => String(x.name || '').trim()).map((x) => ({ ...x, qty: Number(x.qty) || 1 }));
   const weapon = weaponItem(state);
-  return weapon ? [weapon, ...items] : items;
+  const gear = gearItems(state).map((x) => {
+    const bonus = bonusText(x);
+    return {
+      id: x.id,
+      name: gearName(x),
+      qty: Number(x.qty) || 1,
+      kind: x.kind,
+      location: x.location,
+      bonus,
+      notes: [bonus, String(x.description || '').trim()].filter(Boolean).join('. '),
+    };
+  });
+  const money = [['gold', 'Gold coins', state.gold], ['misc-junk', 'Misc. Junk', state.miscJunk]]
+    .filter(([, , value]) => Number(value) > 0)
+    .map(([id, name, value]) => ({ id, name, qty: Number(value), kind: id, location: 'inventory', notes: '' }));
+  return [...(weapon ? [weapon] : []), ...items, ...gear, ...money];
 }
 
 export function hotlist(state) {
@@ -908,6 +980,12 @@ function textLengthErrors(state, errors) {
   if (state.customWeapon.length > 55) errors.push('Shorten the unique weapon name so it fits the character sheet.');
 }
 
+// Starting possessions of a kind, counting ones later removed on the Equipment step.
+function startingCount(state, kind) {
+  const held = (state.items || []).filter((x) => x.kind === kind && String(x.name || '').trim()).length;
+  return held + (Number(state.removedStarting?.[kind]) || 0);
+}
+
 export function errors(state) {
   const out = [];
   if (!String(state.name || '').trim()) out.push('Enter your crawler’s name.');
@@ -964,10 +1042,8 @@ export function errors(state) {
     if (!storyValue(state, key)) out.push(`Choose or write a ${key === 'looseEnd' ? 'Loose End' : key === 'trauma' ? 'Past Trauma' : 'Regret'}.`);
   }
 
-  const useful = (state.items || []).filter((x) => x.kind === 'useful' && String(x.name || '').trim());
-  if (useful.length !== 1) out.push('Choose exactly one interesting or useful starting item.');
-  const weird = (state.items || []).filter((x) => x.kind === 'weird' && String(x.name || '').trim());
-  if (weird.length < 1) out.push('Describe at least one piece of weird stuff you brought with you.');
+  if (startingCount(state, 'useful') !== 1) out.push('Choose exactly one interesting or useful starting item.');
+  if (startingCount(state, 'weird') < 1) out.push('Describe at least one piece of weird stuff you brought with you.');
 
   for (const item of state.items || []) {
     if (!String(item.name || '').trim()) continue;
@@ -985,14 +1061,12 @@ export function errors(state) {
     if (state.potionsSlot === '') out.push('Place the five Standard Mana Potions together in one Hotlist slot.');
   }
 
-  const inventoryCount = carriedItems(state).filter((x) => x.location === 'inventory').length;
-  if (inventoryCount > 20) out.push('The supplied character sheet has only 20 Inventory rows; combine or relocate items.');
-
   const mandatoryAttack = state.combat && attacks[state.combat] ? state.combat : null;
   if (mandatoryAttack && !attackRowsForSheet(state).some((x) => x.name === mandatoryAttack)) out.push('The chosen combat option must appear in the front-page Attacks list.');
   if (new Set(state.attackSheet || []).size > (mandatoryAttack ? 4 : 5)) out.push('The front-page Attacks list has only five rows, including the required chosen combat option.');
   out.push(...raceClassErrors(state));
   out.push(...advancementErrors(state));
+  out.push(...equipmentErrors(state));
 
   return [...new Set(out)];
 }
@@ -1020,11 +1094,12 @@ export function stepCompletion(state) {
     combat: Boolean(state.combatType && state.combat),
     stats: statValidationErrors(state).length === 0,
     story: ['trauma', 'looseEnd', 'regret'].every((key) => storyValue(state, key)),
-    gear: (state.items || []).filter((x) => x.kind === 'useful' && x.name?.trim()).length === 1 && (state.items || []).some((x) => x.kind === 'weird' && x.name?.trim()) && (state.combatType !== 'weapon' || state.weaponLocation),
+    gear: startingCount(state, 'useful') === 1 && startingCount(state, 'weird') >= 1 && (state.combatType !== 'weapon' || state.weaponLocation),
     hotlist: state.combatType !== 'spell' || (state.spellSlot !== '' && state.potionsSlot !== ''),
     attacks: !state.combat || attackRowsForSheet(state).some((x) => x.name === state.combat),
     raceclass: raceClassErrors(state).length === 0,
     advancement: advancementErrors(state).length === 0,
+    equipment: equipmentErrors(state).length === 0,
     review: errors(state).length === 0,
   };
 }

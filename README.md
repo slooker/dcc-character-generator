@@ -51,7 +51,9 @@ The flow covers:
 7. Hotlist placement, including attack Spell / mana-potion requirements when applicable. Slot collisions are rejected immediately, and occupied Hotlist rows can be dragged to reorder them (with up/down buttons as a touch/keyboard fallback).
 8. Player choice of which learned attacks appear in the sheet's five front-page attack rows.
 9. Race & Class: only the Races and Classes whose prerequisites the crawler meets are listed (Earth Classes need an Earth Race; Skill Rank, Popularity, achievement, club, deity and female-only limits are checked). Stat changes go to Unenhanced Stats (Enhanced equals Unenhanced until equipment adds bonuses). Skill and Spell bonuses add Ranks immediately, a new Skill/Spell is gained at the bonus Rank, and totals cap at Rank 10 during selection. "Of your choice" picks and Stat splits are made in the step. DR is listed per source in the sheet's Buffs box; Size and Move are applied; situational benefits go to the sheet notes.
-10. Validation, source-discrepancy rulings, and filled PDF download.
+10. Level & Skills: 3 Stat points per level and a floor-stamped Skill & Spell log.
+11. Equipment (dcc-gear.pdf pp. 98-99): items found later, with gold and Misc. Junk. Gear Slots hold one item each (Head, Torso, Arms, gloves, Legs, Feet), two hands for Holding (Two-Handed weapons use both), and up to 10 Accessories (one belt, one cape); starting clothing and possessions count too. Only equipped items apply their player-entered bonuses: Stat bonuses raise Enhanced Stats only, Skill bonuses add Ranks while equipped (not counted for prerequisites), and DR goes in the sheet's Armor box. Scrolls are named "Scroll of <Spell> (Rank N)"; reading a spellbook logs its Spell in the Skill & Spell log; potions can be used up. More than 20 Inventory rows add an extra Inventory page.
+12. Validation, source-discrepancy rulings, and filled PDF download.
 
 The exported PDF preserves the original four-page fillable AcroForm rather than replacing or flattening it. Starting exported sheets default **Level** to `1` and **Floor** to `1`.
 

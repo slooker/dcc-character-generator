@@ -4,12 +4,16 @@ import {
   attackRowsForSheet, derived, carriedItems, hotlist, errors, missingDetails,
   conflicts, stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
-  entryEffects, splitValues, unenhancedStats, SELECTION_RANK_CAP,
+  entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
   skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
 import { attacks, damageEffects } from './details.js';
 import { downloadCharacterSheet } from './pdf.js';
+import {
+  GEAR_SLOTS, ITEM_KINDS, ACCESSORY_TYPES, STAT_KEYS, CLOTHING_SLOTS, newGearItem, normalizeGearItem, gearItems, gearName,
+  isEquipped, slotUsage, slotCount, bonusText, equipmentErrors, gearStatBonuses, SKILL_BONUS_TYPES,
+} from './equipment.js';
 import {
   account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
   deleteCharacter, setLink, saveStatus, verified, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
@@ -27,6 +31,7 @@ const steps = [
   ['attacks', 'Sheet Attacks'],
   ['raceclass', 'Race & Class'],
   ['advancement', 'Level & Skills'],
+  ['equipment', 'Equipment'],
   ['review', 'Review & PDF'],
 ];
 
@@ -175,6 +180,12 @@ function hotlistAssignments() {
   (state.items || []).forEach((item) => {
     if (!String(item.location || '').startsWith('hotlist:')) return;
     push(`item:${item.id}`, String(item.location).split(':')[1], item.name || 'Unnamed item', (slot) => {
+      item.location = `hotlist:${slot}`;
+    });
+  });
+  gearItems(state).forEach((item) => {
+    if (!String(item.location || '').startsWith('hotlist:')) return;
+    push(`gear:${item.id}`, String(item.location).split(':')[1], gearName(item), (slot) => {
       item.location = `hotlist:${slot}`;
     });
   });
@@ -601,7 +612,7 @@ function reviewStep() {
   const skills = allSkills(state);
   const attacksForSheet = attackRowsForSheet(state);
   return `
-    <p class="eyebrow">STEP 11 · REVIEW & EXPORT</p>
+    <p class="eyebrow">STEP 12 · REVIEW & EXPORT</p>
     <h1>${issues.length ? 'Finish the crawler.' : 'Crawler ready for the sheet.'}</h1>
     <p class="intro">Nothing is randomly assigned except the crawler number. Mandatory calculations are derived automatically from your choices.</p>
     ${conflictReview()}
@@ -623,7 +634,7 @@ function reviewStep() {
       <ul class="issues neutral">${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
     </section>
     <div class="actions">
-      <button class="secondary" data-nav="advancement">Back</button>
+      <button class="secondary" data-nav="equipment">Back</button>
       <div class="action-right">
         <button class="secondary danger-button" data-action="new-crawler">Start a new crawler</button>
         <button class="primary" data-action="download" ${issues.length || exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : 'Download filled character sheet'}</button>
@@ -798,7 +809,138 @@ function advancementStep() {
         }).join('')}
       </tbody></table></div>` : '<p class="muted">No skill-ups logged yet.</p>'}
     </section>
-    ${actions('raceclass', 'review')}
+    ${actions('raceclass', 'equipment')}
+  `;
+}
+
+const KIND_LABELS = Object.fromEntries(ITEM_KINDS);
+const spellNames = skillCatalog.filter((x) => x.kind === 'spell').map((x) => x.name);
+
+// Where a gear item can go: a Gear Slot (bonuses apply), the Inventory or a Hotlist slot.
+function gearLocationOptions(item) {
+  const usage = slotUsage(state);
+  const slotOption = (slot) => {
+    const others = usage[slot.key].filter((x) => x.id !== item.id);
+    const used = slotCount(slot, others);
+    const note = slot.unit === 'hand' ? `${used}/2 hands used` : slot.max === 1 ? (others[0] ? `in use: ${others[0].label}` : '') : `${used}/${slot.max}`;
+    return `<option value="${slot.key}" ${item.location === slot.key ? 'selected' : ''}>${esc(slot.label)}${note ? ` — ${esc(note)}` : ''}</option>`;
+  };
+  const hot = Array.from({ length: 10 }, (_, i) => {
+    const owner = hotlistOwner(i + 1, `gear:${item.id}`);
+    const value = `hotlist:${i + 1}`;
+    return `<option value="${value}" ${item.location === value ? 'selected' : ''}>Hotlist ${i + 1}${owner ? ` — in use: ${esc(owner.label)}` : ''}</option>`;
+  });
+  return `<optgroup label="Gear Slots (bonuses apply)">${GEAR_SLOTS.map(slotOption).join('')}</optgroup>
+    <optgroup label="Not equipped (no bonuses)"><option value="inventory" ${item.location === 'inventory' ? 'selected' : ''}>Inventory</option>${hot.join('')}</optgroup>`;
+}
+
+function gearCard(item, i) {
+  const spellItem = item.kind === 'scroll' || item.kind === 'spellbook';
+  const equipped = isEquipped(item.location);
+  const slot = GEAR_SLOTS.find((x) => x.key === item.location);
+  const bonus = bonusText(item);
+  const field = (label, html, cls = '') => `<label class="field ${cls}"><span class="field-label">${label}</span>${html}</label>`;
+  const nameFields = spellItem
+    ? field('Spell', `<select data-bind="gear.${i}.spell" data-rerender="true"><option value="">Choose a Spell</option>${spellNames.map((name) => `<option ${item.spell === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>`, 'gear-wide')
+      + field('Rank', `<input type="number" min="1" max="20" step="1" data-bind="gear.${i}.rank" data-rerender="true" value="${esc(item.rank)}">`)
+    : field('Name', `<input data-bind="gear.${i}.name" value="${esc(item.name)}" maxlength="80" placeholder="${item.kind === 'potion' ? 'e.g. Healing Potion' : 'e.g. Enchanted Toe Ring'}">`, 'gear-wide');
+  const stats = item.bonuses.stats;
+  return `<div class="item-card gear-card ${equipped ? 'equipped' : ''}">
+    <div class="item-head">
+      <strong>${esc(gearName(item) || `New ${KIND_LABELS[item.kind].toLowerCase()}`)}</strong>
+      <span class="tag">${esc(KIND_LABELS[item.kind])}</span>
+      <span class="muted micro gear-status">${equipped ? `Equipped · ${esc(slot.label)}` : 'Not equipped · no bonuses'}</span>
+      <button type="button" class="icon-button" data-remove-gear="${esc(item.id)}" aria-label="Remove ${esc(gearName(item) || 'item')}">×</button>
+    </div>
+    <div class="fields gear-fields">
+      ${nameFields}
+      ${field('Quantity', `<input type="number" min="1" step="1" data-bind="gear.${i}.qty" data-rerender="true" value="${esc(item.qty)}">`)}
+      ${field('Where is it?', `<select data-bind="gear.${i}.location" data-rerender="true">${gearLocationOptions(item)}</select>`, 'gear-wide')}
+      ${item.location === 'holding' ? `<label class="check gear-check"><input type="checkbox" data-bind="gear.${i}.twoHanded" ${item.twoHanded ? 'checked' : ''}> Limitation: Two-Handed (uses both hands)</label>` : ''}
+      ${item.location === 'accessories' ? field('Accessory type', `<select data-bind="gear.${i}.accessoryType" data-rerender="true">${ACCESSORY_TYPES.map(([v, label]) => `<option value="${v}" ${item.accessoryType === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`) : ''}
+    </div>
+    ${field('Description <span class="optional">optional</span>', `<textarea data-bind="gear.${i}.description" maxlength="300" rows="2">${esc(item.description)}</textarea>`)}
+    <details class="gear-bonuses" ${bonus ? 'open' : ''}>
+      <summary>Bonuses when equipped${bonus ? `: ${esc(bonus)}` : ''}</summary>
+      <div class="gear-stat-grid">${STAT_KEYS.map((key) => field(key, `<input type="number" step="1" data-bind="gear.${i}.bonuses.stats.${key}" data-rerender="true" value="${esc(stats[key] ?? '')}" placeholder="0">`)).join('')}
+        ${field('DR', `<input type="number" step="1" data-bind="gear.${i}.bonuses.dr" data-rerender="true" value="${esc(item.bonuses.dr)}" placeholder="0">`)}</div>
+      ${item.bonuses.skills.map((x, j) => `<div class="gear-skill-row">
+        ${field('Skill or Spell', `<input list="gear-skill-names" data-bind="gear.${i}.bonuses.skills.${j}.name" data-rerender="true" value="${esc(x.name)}" maxlength="60">`, 'gear-wide')}
+        ${field('Bonus to', `<select data-bind="gear.${i}.bonuses.skills.${j}.type" data-rerender="true">${SKILL_BONUS_TYPES.map(([v, label]) => `<option value="${v}" ${x.type === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
+        ${field('Amount', `<input type="number" step="1" data-bind="gear.${i}.bonuses.skills.${j}.ranks" data-rerender="true" value="${esc(x.ranks)}" placeholder="+1">`)}
+        <button type="button" class="secondary small" data-remove-gear-skill="${esc(item.id)}:${j}">Remove</button>
+      </div>`).join('')}
+      <button type="button" class="secondary small" data-add-gear-skill="${esc(item.id)}">+ Skill bonus</button>
+      <p class="muted micro">Skill Ranks can't take a Skill past its Rank limit (15, or 20 if your Race or Class allows); extra Ranks do nothing. A bonus to checks isn't Ranks, so it always applies.</p>
+    </details>
+    ${item.kind === 'potion' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-use="${esc(item.id)}">Use one</button><span class="muted micro">Single use. In combat, no more than one potion every other round (Potion Sickness).</span></div>` : ''}
+    ${item.kind === 'spellbook' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-read="${esc(item.id)}" ${item.spell && Number(item.rank) >= 1 ? '' : 'disabled'}>Read it</button><span class="muted micro">Grants the Spell at its Rank, then the book disappears.</span></div>` : ''}
+    ${item.kind === 'scroll' ? '<p class="muted micro">Casts the Spell once at its set Rank for no Mana, then turns to dust.</p>' : ''}
+  </div>`;
+}
+
+function startingPossessions() {
+  const weapon = state.combatType === 'weapon' && state.combat;
+  const weaponName = weapon ? (state.customWeapon.trim() ? `${state.customWeapon.trim()} (${state.combat})` : state.combat) : '';
+  const clothing = Object.entries(state.clothing).filter(([, text]) => String(text || '').trim());
+  const items = state.items.map((item, index) => ({ item, index })).filter(({ item }) => String(item.name || '').trim());
+  if (!weapon && !clothing.length && !items.length) return '<p class="muted">Nothing from character creation yet.</p>';
+  return `<div class="table-wrap"><table class="gear-start"><tbody>
+    ${weapon ? `<tr><td><strong>${esc(weaponName)}</strong><br><span class="muted micro">Starting weapon</span></td>
+      <td><select data-bind="weaponLocation" data-rerender="true" aria-label="Where is ${esc(weaponName)}?">${locationOptions(state.weaponLocation, false, 'weapon')}</select>
+      ${state.weaponLocation === 'holding' ? `<label class="check"><input type="checkbox" data-bind="weaponTwoHanded" ${state.weaponTwoHanded ? 'checked' : ''}> Two-Handed</label>` : ''}</td><td></td></tr>` : ''}
+    ${clothing.map(([field, text]) => `<tr><td><strong>${esc(text)}</strong><br><span class="muted micro">Starting clothing</span></td>
+      <td>Worn · ${esc(GEAR_SLOTS.find((x) => x.key === CLOTHING_SLOTS[field]).label)}</td>
+      <td><button type="button" class="secondary small" data-take-off="${field}">Take off</button></td></tr>`).join('')}
+    ${items.map(({ item, index }) => `<tr><td><strong>${esc(item.name)}</strong>${item.qty > 1 ? ` ×${esc(item.qty)}` : ''}<br><span class="muted micro">${item.kind === 'useful' ? 'Interesting / useful item' : 'Weird stuff'}</span></td>
+      <td><select data-item-index="${index}" data-item-field="location" aria-label="Where is ${esc(item.name)}?">${locationOptions(item.location, true, `item:${item.id}`)}</select></td>
+      <td><button type="button" class="secondary small" data-remove-starting="${index}">Remove</button></td></tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+function equipmentStep() {
+  const d = derived(state);
+  const issues = equipmentErrors(state);
+  const usage = slotUsage(state);
+  const bonus = gearStatBonuses(state);
+  const enhanced = enhancedStats(state);
+  const boosted = STAT_KEYS.filter((key) => bonus[key]);
+  return `
+    <p class="eyebrow">STEP 11 · EQUIPMENT</p>
+    <h1>Gear up.</h1>
+    <p class="intro">Only items in your Gear Slots give bonuses; items in the Inventory or Hotlist don't. Inventory items are weightless, but you can only put away what you can lift.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Wealth & lifting</h2>${sourceRef('Gear pp. 98-99')}</div>
+      <div class="fields">
+        <label class="field"><span class="field-label">Gold coins</span><input type="number" min="0" step="1" data-bind="gold" data-rerender="true" value="${esc(state.gold)}"><small>All your gold fits in one Inventory slot.</small></label>
+        <label class="field"><span class="field-label">Misc. Junk</span><input type="number" min="0" step="1" data-bind="miscJunk" data-rerender="true" value="${esc(state.miscJunk)}"><small>Spend 1 point to find an innocuous item. Sells for 1 gold each.</small></label>
+      </div>
+      <p class="muted">Lifting limit: <strong>${d.lift ? `${d.lift} lb` : '—'}</strong>${d.lift ? ` (Strength ${enhanced.Str} × 15)` : ''}.</p>
+      ${boosted.length ? `<p class="muted micro">Equipped gear raises Enhanced ${boosted.map((key) => `${key} to ${enhanced[key]} (${bonus[key] > 0 ? '+' : ''}${bonus[key]})`).join(', ')}. Unenhanced Stats don't change.</p>` : ''}
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Gear Slots</h2>${sourceRef('p. 98')}</div>
+      <div class="table-wrap"><table class="gear-slots"><tbody>${GEAR_SLOTS.map((slot) => {
+        const entries = usage[slot.key];
+        const used = slotCount(slot, entries);
+        const over = used > slot.max;
+        return `<tr class="${over ? 'over' : ''}"><th scope="row">${esc(slot.label)}</th>
+          <td>${entries.length ? entries.map((x) => `${esc(x.label)}${x.hands === 2 ? ' (two hands)' : ''}`).join(', ') : '<span class="muted">Empty</span>'}</td>
+          <td class="nowrap ${over ? 'error' : 'muted'}">${used}/${slot.max}${slot.unit === 'hand' ? ' hands' : ''}</td></tr>`;
+      }).join('')}</tbody></table></div>
+      ${issues.length ? `<div class="validation-box"><strong>Fix these:</strong><ul>${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Items</h2><span class="ref">${gearItems(state).length} carried</span></div>
+      ${state.gear.map(gearCard).join('') || '<p class="muted">No items yet. Add what your crawler has found, bought or crafted.</p>'}
+      <div class="item-add-row">${ITEM_KINDS.map(([kind, label]) => `<button type="button" class="secondary small" data-add-gear="${kind}">+ ${label}</button>`).join('')}</div>
+      <datalist id="gear-skill-names">${[...new Set([...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)])].map((name) => `<option value="${esc(name)}">`).join('')}</datalist>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>From character creation</h2>${sourceRef('Starting Gear step')}</div>
+      ${startingPossessions()}
+    </section>
+    ${actions('advancement', 'review')}
   `;
 }
 
@@ -814,6 +956,7 @@ function renderMain() {
     attacks: attacksStep,
     raceclass: raceClassStep,
     advancement: advancementStep,
+    equipment: equipmentStep,
     review: reviewStep,
     account: () => accountView(state),
     profile: profileView,
@@ -1035,6 +1178,8 @@ main.addEventListener('click', async (event) => {
     return renderMain();
   }
 
+  if (gearClick(event)) return;
+
   const addItem = event.target.closest('[data-add-item]');
   if (addItem) {
     const id = `item-${Date.now()}-${state.items.length}`;
@@ -1144,6 +1289,71 @@ eraseDialog.addEventListener('close', () => {
     startNewCrawler();
   }
 });
+
+const gearById = (id) => state.gear.find((x) => x.id === id);
+
+// Equipment step buttons; true if handled.
+function gearClick(event) {
+  const target = event.target.closest('[data-add-gear], [data-remove-gear], [data-gear-use], [data-gear-read], [data-add-gear-skill], [data-remove-gear-skill], [data-take-off], [data-remove-starting]');
+  if (!target) return false;
+  const { addGear, removeGear, gearUse, gearRead, addGearSkill, removeGearSkill, takeOff, removeStarting } = target.dataset;
+  if (addGear) {
+    state.gear.push(newGearItem(addGear));
+  } else if (removeGear) {
+    const item = gearById(removeGear);
+    if (item && gearName(item) && !confirm(`Remove ${gearName(item)}?`)) return true;
+    state.gear = state.gear.filter((x) => x.id !== removeGear);
+  } else if (gearUse) {
+    const item = gearById(gearUse);
+    const left = Math.max(0, (Number(item.qty) || 1) - 1);
+    if (left) item.qty = left;
+    else state.gear = state.gear.filter((x) => x !== item);
+    setNotice(`Used 1 ${gearName(item)}${left ? ` (${left} left)` : '; none left'}.`);
+  } else if (gearRead) {
+    if (!readSpellbook(gearById(gearRead))) return true;
+  } else if (addGearSkill) {
+    gearById(addGearSkill).bonuses.skills.push({ name: '', ranks: '', type: 'rank' });
+  } else if (removeGearSkill) {
+    const [id, j] = removeGearSkill.split(':');
+    gearById(id).bonuses.skills.splice(Number(j), 1);
+  } else if (takeOff) {
+    // Starting clothing becomes an Inventory item so its slot is free.
+    const item = normalizeGearItem({ ...newGearItem('item'), name: state.clothing[takeOff].trim(), description: 'Starting clothing' });
+    state.gear.push(item);
+    state.clothing[takeOff] = '';
+    setNotice(`${item.name} is in the Inventory now.`);
+  } else if (removeStarting) {
+    const item = state.items[Number(removeStarting)];
+    if (!confirm(`Remove ${item.name}? It's deleted from this crawler.`)) return true;
+    // Creation still needed it (one useful item, some weird stuff), so remember it existed.
+    state.removedStarting[item.kind] = (state.removedStarting[item.kind] || 0) + 1;
+    state.items.splice(Number(removeStarting), 1);
+  }
+  saveState();
+  render();
+  return true;
+}
+
+// A spellbook grants its Spell at its Rank (p. 99): logged in the Skill & Spell
+// log on the current floor, raising the Spell to that Rank if it's lower.
+function readSpellbook(item) {
+  const rank = Number(item.rank);
+  const name = gearName(item);
+  const known = allSkills(state).find((x) => x.name.toLowerCase() === item.spell.toLowerCase());
+  const current = known ? known.rank - (known.gearRanks || 0) : 0;
+  const ranks = Math.max(0, rank - current);
+  const floor = currentFloor(state);
+  const message = ranks
+    ? `Read ${name}? ${item.spell} becomes Rank ${rank} (logged as +${ranks} on Floor ${floor} in Level & Skills), and the book disappears.`
+    : `You already have ${item.spell} at Rank ${current}, so ${name} won't raise it. Read it anyway? The book disappears.`;
+  if (!confirm(message)) return false;
+  if (ranks) state.skillUps.push({ skill: item.spell, ranks: String(ranks), floor: String(floor), how: 'Potion or item', note: `Read ${name}` });
+  const left = Math.max(0, (Number(item.qty) || 1) - 1);
+  if (left) item.qty = left;
+  else state.gear = state.gear.filter((x) => x !== item);
+  setNotice(ranks ? `${item.spell} is now Rank ${rank}.` : `${name} was read.`);
+  return true;
+}
 
 async function saveToAccount() {
   if (!verified()) return navigate('account');
@@ -1276,6 +1486,14 @@ main.addEventListener('change', (event) => {
             : 'weapon';
       if (warnIfHotlistCollision(value, key)) {
         target.value = state[target.dataset.bind] ?? '';
+        return;
+      }
+    }
+    const gearLocation = target.dataset.bind.match(/^gear\.(\d+)\.location$/);
+    if (gearLocation) {
+      const item = state.gear[Number(gearLocation[1])];
+      if (warnIfHotlistCollision(value, `gear:${item.id}`)) {
+        target.value = item.location;
         return;
       }
     }

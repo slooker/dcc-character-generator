@@ -94,12 +94,30 @@ function fillSkillRows(form, skills, state, d) {
 // Skills beyond the sheet's 20 rows go on extra copies of the Skills page,
 // filled the same way and flattened so their field names can't collide with
 // the main sheet's form.
-async function overflowSkillPages(PDFDocument, font, templateBytes, skills, state, d) {
+const INVENTORY_ROWS = 20;
+const INVENTORY_PAGE_INDEX = 3;
+
+function fillInventoryRows(form, items) {
+  for (let row = 0; row < INVENTORY_ROWS; row++) {
+    const base = 223 + row * 3;
+    clearField(form, `Text Field ${base}`);
+    clearField(form, `Text Field ${base + 1}`);
+    clearField(form, `Text Field ${base + 2}`);
+    const item = items[row];
+    if (!item) continue;
+    setField(form, `Text Field ${base}`, item.name, { fontSize: 8 });
+    setField(form, `Text Field ${base + 1}`, item.qty, { fontSize: 8 });
+    setField(form, `Text Field ${base + 2}`, compact(item.notes || '', 120), { fontSize: 7.5, multiline: true });
+  }
+}
+
+// Extra copies of a template page for rows past the first `perPage`, filled by `fill(form, rows)`.
+async function overflowPages(PDFDocument, font, templateBytes, rows, perPage, fill) {
   const pages = [];
-  for (let start = SKILL_ROWS; start < skills.length; start += SKILL_ROWS) {
+  for (let start = perPage; start < rows.length; start += perPage) {
     const extra = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
     const extraForm = extra.getForm();
-    fillSkillRows(extraForm, skills.slice(start, start + SKILL_ROWS), state, d);
+    fill(extraForm, rows.slice(start, start + perPage));
     extraForm.updateFieldAppearances(await extra.embedFont(font));
     extraForm.flatten();
     pages.push(extra);
@@ -150,7 +168,9 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 27', d.move, { fontSize: 9 });
   setField(form, 'Text Field 28', d.step, { fontSize: 9 });
   // Damage Resistance: Armor + Buffs = DR Total. Race/Class DR is listed per source.
-  clearField(form, 'Text Field 29');
+  // Armor: DR from equipped gear; Buffs: Race/Class DR.
+  if (d.dr.armor) setField(form, 'Text Field 29', d.dr.armor, { fontSize: 9 });
+  else clearField(form, 'Text Field 29');
   setField(form, 'Text Field 30', d.dr.parts.map((x) => `+${x.value} (${x.from})`).join(' '), { fontSize: 8 });
   setField(form, 'Text Field 31', d.dr.total || '', { fontSize: 9 });
   setField(form, 'Text Field 32', d.aiFavor, { fontSize: 9 });
@@ -186,16 +206,21 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   hot.forEach((text, index) => setField(form, `Text Field ${81 + index}`, text, { fontSize: 6.5, multiline: true }));
 
   // Page 2: gear slots and story.
+  // Each slot: worn starting clothing, then equipped items with their bonuses.
   const carried = carriedItems(state);
-  const held = carried.filter((x) => x.location === 'holding');
+  const worn = (location, clothing = '') => [
+    String(clothing || '').trim(),
+    ...carried.filter((x) => x.location === location).map((x) => `${x.name}${x.bonus ? ` (${x.bonus})` : ''}`),
+  ].filter(Boolean);
+  const slotField = (name, lines) => setField(form, name, lines.join('\n'), { fontSize: lines.length > 1 ? 7 : 8, multiline: lines.length > 1 });
   const accessories = carried.filter((x) => x.location === 'accessories');
-  setField(form, 'Text Field 91', accessories.map(gearText).join('\n'), { fontSize: 7, multiline: true });
-  setField(form, 'Text Field 92', state.clothing.Head || '', { fontSize: 8 });
-  setField(form, 'Text Field 93', state.clothing.Torso || '', { fontSize: 8 });
-  setField(form, 'Text Field 94', state.clothing.Arms || '', { fontSize: 8 });
-  setField(form, 'Text Field 95', [state.clothing.Hands || '', ...held.map((x) => `Holding: ${gearText(x)}`)].filter(Boolean).join('\n'), { fontSize: 7, multiline: true });
-  setField(form, 'Text Field 96', state.clothing.Legs || '', { fontSize: 8 });
-  setField(form, 'Text Field 97', state.clothing.Feet || '', { fontSize: 8 });
+  setField(form, 'Text Field 91', accessories.map(gearText).join('\n'), { fontSize: 7, multiline: true }); // notes start with any bonus
+  slotField('Text Field 92', worn('head', state.clothing.Head));
+  slotField('Text Field 93', worn('torso', state.clothing.Torso));
+  slotField('Text Field 94', worn('arms', state.clothing.Arms));
+  slotField('Text Field 95', [...worn('gloves', state.clothing.Hands), ...worn('holding').map((x) => `Holding: ${x}`)]);
+  slotField('Text Field 96', worn('legs', state.clothing.Legs));
+  slotField('Text Field 97', worn('feet', state.clothing.Feet));
   setField(form, 'Text Field 98', String(state.popularity ?? '').trim(), { fontSize: 8 }); // Blank at creation unless recorded.
   setField(form, 'Text Field 99', state.story.trauma, { fontSize: 8, multiline: true });
   setField(form, 'Text Field 100', state.story.looseEnd, { fontSize: 8, multiline: true });
@@ -220,19 +245,10 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   const skills = allSkills(state);
   fillSkillRows(form, skills.slice(0, SKILL_ROWS), state, d);
 
-  // Page 4: Inventory. Hotlist/holding/accessories are not duplicated here.
-  const inventory = carried.filter((x) => x.location === 'inventory').slice(0, 20);
-  for (let row = 0; row < 20; row++) {
-    const base = 223 + row * 3;
-    clearField(form, `Text Field ${base}`);
-    clearField(form, `Text Field ${base + 1}`);
-    clearField(form, `Text Field ${base + 2}`);
-    const item = inventory[row];
-    if (!item) continue;
-    setField(form, `Text Field ${base}`, item.name, { fontSize: 8 });
-    setField(form, `Text Field ${base + 1}`, item.qty, { fontSize: 8 });
-    setField(form, `Text Field ${base + 2}`, item.notes || '', { fontSize: 7.5, multiline: true });
-  }
+  // Page 4: Inventory. Hotlist/holding/accessories are not duplicated here;
+  // more than 20 rows continue on extra Inventory pages.
+  const inventory = carried.filter((x) => x.location === 'inventory');
+  fillInventoryRows(form, inventory.slice(0, INVENTORY_ROWS));
 
   try {
     form.updateFieldAppearances(font);
@@ -240,10 +256,15 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     throw new Error(`A character-sheet field contains text the PDF font cannot encode. Remove unusual emoji/symbols and try again. (${error.message})`);
   }
 
-  const extras = await overflowSkillPages(PDFDocument, StandardFonts.Helvetica, templateBytes, skills, state, d);
+  const extras = await overflowPages(PDFDocument, StandardFonts.Helvetica, templateBytes, skills, SKILL_ROWS, (extraForm, rows) => fillSkillRows(extraForm, rows, state, d));
   for (const [i, extra] of extras.entries()) {
     const [page] = await pdfDoc.copyPages(extra, [SKILLS_PAGE_INDEX]);
     pdfDoc.insertPage(SKILLS_PAGE_INDEX + 1 + i, page);
+  }
+  const inventoryExtras = await overflowPages(PDFDocument, StandardFonts.Helvetica, templateBytes, inventory, INVENTORY_ROWS, fillInventoryRows);
+  for (const extra of inventoryExtras) {
+    const [page] = await pdfDoc.copyPages(extra, [INVENTORY_PAGE_INDEX]);
+    pdfDoc.addPage(page);
   }
 
   // Keep the AcroForm editable; do not flatten.
