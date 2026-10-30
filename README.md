@@ -124,6 +124,20 @@ Crawlers can be saved to an email/password account, up to 5 per account (enforce
 - **Edit profile** (the name button in the header) changes the display name and email. Changing the email needs the current password and a code sent to the new address; the old address gets a notice once the change goes through.
 - API docs: `http://localhost:4173/api/docs`.
 
+#### Sign in with Google
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), open **APIs & Services → OAuth consent screen** (Google Auth Platform) and set it up as **External**, with the `openid`, `email` and `profile` scopes.
+2. Under **Clients** (Credentials), create an OAuth client of type **Web application** with the authorized redirect URI `https://<your-site>/api/auth/google/callback`.
+3. Add to `.env`, then `docker compose up -d`:
+
+```sh
+GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=...
+PUBLIC_URL=https://<your-site>
+```
+
+The "Continue with Google" button appears once both client values are set. A Google account links to an existing account through its verified email; if that account never verified its email, its password is removed, since whoever set it never proved they own the address. New Google accounts are verified from the start. Accounts that only use Google change their email without a password, but still confirm the new address with a code.
+
 #### Email
 
 Settings go in a `.env` file next to `docker-compose.yaml` (it's gitignored). Run `docker compose up -d` after changing it.

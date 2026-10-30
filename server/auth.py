@@ -15,7 +15,7 @@
   (`verified_user`). Changing the email sends a code to the new address, and
   the change only happens once that code is entered.
 
-Google sign-in will add `google` rows to auth_identities next to `password`.
+Google sign-in (google.py) adds `google` rows to auth_identities next to `password`.
 """
 import hashlib
 import hmac
@@ -114,7 +114,7 @@ class ProfileBody(BaseModel):
 
 class EmailChange(BaseModel):
     email: str
-    password: str
+    password: str = ''
 
 
 def normalize_email(email: str) -> str:
@@ -153,6 +153,8 @@ def user_json(db: Session, user: User) -> dict:
         # A verification code is out and still usable (the verify screen offers "Send code" otherwise).
         'verifyCodeSent': user.email_verified_at is None and live_code(db, user, 'verify') is not None,
         'pendingEmail': pending_email(db, user),
+        # Ways to sign in: 'password' and/or 'google'.
+        'providers': sorted(db.scalars(select(AuthIdentity.provider).where(AuthIdentity.user_id == user.id)).all()),
     }
 
 
@@ -370,9 +372,11 @@ def update_profile(body: ProfileBody, user: User = Depends(verified_user), db: S
 
 @router.post('/email')
 def change_email(body: EmailChange, user: User = Depends(verified_user), db: Session = Depends(get_session)):
-    """Start an email change: needs the current password, then a code sent to the new address."""
+    """Start an email change: needs the current password (accounts that only sign
+    in with Google have none), then a code sent to the new address."""
     email = checked_email(body.email)
-    if not password_ok(password_identity(db, user), body.password):
+    identity = password_identity(db, user)
+    if identity is not None and not password_ok(identity, body.password):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Your current password isn't right.")
     if email == user.email:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "That's already your email address.")

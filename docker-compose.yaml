@@ -17,6 +17,12 @@ services:
       # Email for verification codes: Bird (BIRD_API_KEY) if set, else SMTP.
       # With neither, emails (and their codes) go to the container log.
       BIRD_API_KEY: ${BIRD_API_KEY:-}
+      # Sign in with Google: an OAuth "Web application" client whose redirect URI
+      # is <PUBLIC_URL>/api/auth/google/callback. Leave blank to hide the button.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # The site's public address, e.g. https://dcc.slooker.us (default: from the request).
+      PUBLIC_URL: ${PUBLIC_URL:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURITY: ${SMTP_SECURITY:-starttls}

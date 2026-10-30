@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from server import auth, characters
+from server import auth, characters, google
 from server.database import get_session, upgrade
 
 DIST = Path(os.environ.get('DIST_DIR', Path(__file__).resolve().parent.parent / 'dist')).resolve()
@@ -53,6 +53,7 @@ async def require_api_header(request: Request, call_next):
 
 app.include_router(auth.router)
 app.include_router(characters.router)
+app.include_router(google.router)
 
 
 @app.get('/api/health')

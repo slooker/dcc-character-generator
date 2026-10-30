@@ -1678,8 +1678,25 @@ main.addEventListener('pointercancel', (event) => {
 });
 
 render();
+// Coming back from Google sign-in: /?signed_in=google or /?auth_error=<code>.
+const GOOGLE_ERRORS = {
+  google_cancelled: 'Google sign-in was cancelled.',
+  google_expired: 'That Google sign-in took too long or was already used. Try again.',
+  google_unverified_email: "Google hasn't verified that account's email address, so it can't be used here.",
+  google_bad_token: "Google's response couldn't be verified. Try again.",
+  google_unavailable: "Couldn't reach Google. Try again in a minute.",
+};
+const returnParams = new URLSearchParams(location.search);
+const authReturn = returnParams.get('signed_in') || returnParams.get('auth_error');
+if (authReturn) history.replaceState(null, '', location.pathname + location.hash);
+
 // Only redraw what depends on the account, so a field being typed in keeps focus.
 refreshAccount().then(() => {
+  if (authReturn) {
+    if (returnParams.get('signed_in') && account.user) setNotice('Signed in with Google.', 4000);
+    else setNotice(GOOGLE_ERRORS[returnParams.get('auth_error')] || 'Google sign-in failed. Try again.', 7000);
+    return navigate('account');
+  }
   renderAccountBar();
   if (activeStep === 'account') renderMain();
 });

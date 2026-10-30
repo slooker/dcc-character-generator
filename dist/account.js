@@ -13,7 +13,8 @@ const LINK_KEY = 'dcc-crawler-builder-link';
 export const account = {
   available: true, // false when no server answers (e.g. dist/ served statically)
   ready: false,
-  user: null, // { id, email, name, emailVerified, pendingEmail }
+  user: null, // { id, email, name, emailVerified, pendingEmail, providers }
+  google: false, // the server has Google sign-in configured
   characters: [],
   limit: 5,
   mode: 'login', // or 'register'
@@ -85,6 +86,7 @@ async function loadList() {
 }
 
 export async function refreshAccount() {
+  api('auth/google').then((data) => { account.google = Boolean(data?.enabled); }).catch(() => {});
   try {
     account.user = (await api('auth/me')).user;
     await loadList();
@@ -212,6 +214,14 @@ export function slotText() {
   return `${account.characters.length}/${account.limit}`;
 }
 
+// Google's sign-in button (dark theme) per its branding guidelines: the
+// four-color "G" and the standard "Sign in / Sign up with Google" wording.
+const GOOGLE_G = '<svg class="google-g" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+
+function googleButton(register) {
+  return `<a class="google-button" href="api/auth/google/start">${GOOGLE_G}<span>${register ? 'Sign up' : 'Sign in'} with Google</span></a>`;
+}
+
 const signOutButton = '<button type="button" class="secondary account-button" data-action="sign-out">Sign out</button>';
 
 export function accountBar(state) {
@@ -244,6 +254,8 @@ function authForm() {
         <button type="button" role="tab" aria-selected="${!register}" class="${register ? '' : 'active'}" data-account-mode="login">Sign in</button>
         <button type="button" role="tab" aria-selected="${register}" class="${register ? 'active' : ''}" data-account-mode="register">Create account</button>
       </div>
+      ${account.google ? `${googleButton(register)}
+      <p class="muted micro auth-or">${register ? 'Or create an account with your email:' : 'Or sign in with your email:'}</p>` : ''}
       <form data-account-form="${kind}" class="account-form">
         ${register ? '<label class="field"><span class="field-label">Name <span class="optional">optional</span></span><input name="name" autocomplete="name" maxlength="80"></label>' : ''}
         <label class="field"><span class="field-label">Email</span><input name="email" type="email" autocomplete="email" required maxlength="320">${register ? "<small>We'll email a code to confirm it.</small>" : ''}</label>
@@ -340,7 +352,9 @@ export function profileView() {
   if (!account.available) return unavailableView();
   if (!account.user) return signInView();
   if (!verified()) return verifyView();
-  const { name, email, pendingEmail } = account.user;
+  const { name, email, pendingEmail, providers = [] } = account.user;
+  const hasPassword = providers.includes('password');
+  const methods = [providers.includes('google') && 'Google', hasPassword && 'email and password'].filter(Boolean).join(' and ');
   const emailPanel = pendingEmail
     ? `<p class="muted">We sent a code to <strong>${esc(pendingEmail)}</strong>. Your email stays <strong>${esc(email)}</strong> until you enter it.</p>
       <form data-account-form="confirm-email" class="account-form">
@@ -355,7 +369,7 @@ export function profileView() {
     : `<p class="muted">Current email: <strong>${esc(email)}</strong>. We'll send a code to the new address, and the change happens once you enter it.</p>
       <form data-account-form="change-email" class="account-form">
         <label class="field"><span class="field-label">New email</span><input name="email" type="email" autocomplete="email" required maxlength="320"></label>
-        <label class="field"><span class="field-label">Current password</span><input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+        ${hasPassword ? '<label class="field"><span class="field-label">Current password</span><input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>' : ''}
         ${formError('change-email')}
         <button class="primary" type="submit" ${account.busy ? 'disabled' : ''}>Send code</button>
       </form>`;
@@ -373,5 +387,6 @@ export function profileView() {
     <section class="panel account-panel">
       <div class="panel-head"><h2>Email</h2></div>
       ${emailPanel}
+      ${methods ? `<p class="muted micro">You sign in with ${methods}.${providers.includes('google') ? ' Google sign-in keeps working after an email change.' : ''}</p>` : ''}
     </section>`;
 }

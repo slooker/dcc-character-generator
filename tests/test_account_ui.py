@@ -112,6 +112,27 @@ class AccountUiTests(unittest.TestCase):
         self.js.eval("account.available = false;")
         self.assertTrue(self.val("canStartNewCrawler()"))  # no server: nothing to verify against
 
+    def test_google_button_only_when_configured(self) -> None:
+        self.js.eval("account.user = null;")
+        self.assertNotIn("with Google", self.val("accountView(crawler('x'))"))
+        self.js.eval("account.google = true;")
+        page = self.val("accountView(crawler('x'))")
+        self.assertIn('href="api/auth/google/start">', page)
+        self.assertIn("<span>Sign in with Google</span>", page)
+        self.js.eval("account.mode = 'register';")
+        self.assertIn("<span>Sign up with Google</span>", self.val("accountView(crawler('x'))"))
+
+    def test_google_only_profile_has_no_password_field(self) -> None:
+        self.js.eval("account.user.providers = ['google'];")
+        page = self.val("profileView()")
+        self.assertIn('data-account-form="change-email"', page)
+        self.assertNotIn('name="password"', page)
+        self.assertIn("You sign in with Google.", page)
+        self.js.eval("account.user.providers = ['google', 'password'];")
+        page = self.val("profileView()")
+        self.assertIn('name="password"', page)
+        self.assertIn("Google and email and password", page)
+
     def test_full_account_cannot_save_a_new_crawler(self) -> None:
         self.js.eval("account.characters = [1, 2, 3, 4, 5].map((i) => row(i, `Crawler ${i}`));")
         page = self.val("accountView(crawler('Sixth'))")
