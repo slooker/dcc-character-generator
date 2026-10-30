@@ -1,0 +1,11 @@
+.git
+.venv/
+source-files/
+source-text/
+tools/
+tests/
+tmp/
+*.md
+qa-responsive.html
+__pycache__/
+*.db

@@ -1,5 +1,6 @@
 import {
   stats, allSkills, attackRowsForSheet, derived, carriedItems, hotlist, conflicts,
+  unenhancedStats, enhancedStats, findRace, findClass,
 } from './rules.js';
 
 const attackFields = [
@@ -20,11 +21,6 @@ const statFields = {
 
 function asText(value) {
   return value === null || value === undefined ? '' : String(value);
-}
-
-function withPlus(value) {
-  const n = Number(value);
-  return Number.isFinite(n) && n !== 0 ? `${n > 0 ? '+' : ''}${n}` : '';
 }
 
 function compact(text, max = 145) {
@@ -56,10 +52,9 @@ function clearField(form, name) {
   setField(form, name, '');
 }
 
-function skillStatText(skill, mods) {
+function skillStatText(skill, modText) {
   if (!skill.stat || skill.stat === 'None') return 'None';
-  const mod = mods[skill.stat];
-  return `${skill.stat} ${withPlus(mod)}`.trim();
+  return `${skill.stat} ${modText[skill.stat] || ''}`.trim();
 }
 
 function attackEffects(attack) {
@@ -74,6 +69,44 @@ function gearText(item) {
   return `${item.name}${qty}${item.notes ? ` - ${item.notes}` : ''}`;
 }
 
+const SKILL_ROWS = 20;
+const SKILLS_PAGE_INDEX = 2;
+
+// Fill the 20 Skill rows on the template's Skills page.
+function fillSkillRows(form, skills, state, d) {
+  for (let row = 0; row < SKILL_ROWS; row++) {
+    const base = 103 + row * 6;
+    for (let offset = 0; offset < 5; offset++) clearField(form, `Text Field ${base + offset}`);
+    const skill = skills[row];
+    if (!skill) continue;
+    let notes = skill.notes || '';
+    if (skill.name === 'Performance' && state.performance) notes = `Specialty: ${state.performance}. ${notes}`;
+    if (skill.conflict && state.rulings[skill.name]) notes = `GM ruling uses ${state.rulings[skill.name]}. ${notes}`;
+    if (skill.source) notes = `${skill.source}. ${notes}`;
+    setField(form, `Text Field ${base}`, skill.label || skill.name, { fontSize: 7.5 });
+    setField(form, `Text Field ${base + 1}`, skill.rank, { fontSize: 7.5 });
+    setField(form, `Text Field ${base + 2}`, skillStatText(skill, d.modText), { fontSize: 7 });
+    setField(form, `Text Field ${base + 3}`, skill.check || (skill.damageStat !== undefined ? 'Evade' : ''), { fontSize: 6.5 });
+    setField(form, `Text Field ${base + 4}`, compact(notes, 180), { fontSize: 6.2, multiline: true });
+  }
+}
+
+// Skills beyond the sheet's 20 rows go on extra copies of the Skills page,
+// filled the same way and flattened so their field names can't collide with
+// the main sheet's form.
+async function overflowSkillPages(PDFDocument, font, templateBytes, skills, state, d) {
+  const pages = [];
+  for (let start = SKILL_ROWS; start < skills.length; start += SKILL_ROWS) {
+    const extra = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
+    const extraForm = extra.getForm();
+    fillSkillRows(extraForm, skills.slice(start, start + SKILL_ROWS), state, d);
+    extraForm.updateFieldAppearances(await extra.embedFont(font));
+    extraForm.flatten();
+    pages.push(extra);
+  }
+  return pages;
+}
+
 export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   if (!PDFLibNamespace?.PDFDocument) throw new Error('PDF library did not load.');
   const { PDFDocument, StandardFonts } = PDFLibNamespace;
@@ -84,24 +117,29 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
 
   // Page 1: identity.
   setField(form, 'Name', state.name, { fontSize: 9 });
-  setField(form, 'Race', state.kind === 'human' ? 'Human' : state.species, { fontSize: 9 });
+  setField(form, 'Race', state.race || (state.kind === 'human' ? 'Human' : state.species), { fontSize: 9 });
   setField(form, 'Gender', state.pronouns, { fontSize: 8 });
-  setField(form, 'level', 1, { fontSize: 9 });
+  setField(form, 'level', d.level, { fontSize: 9 });
   setField(form, 'crawler number', state.number, { fontSize: 9 });
-  clearField(form, 'class');
-  setField(form, 'Floor', 1, { fontSize: 9 });
+  if (state.className) setField(form, 'class', state.className, { fontSize: 9 });
+  else clearField(form, 'class');
+  setField(form, 'Floor', d.floor, { fontSize: 9 });
 
   // Health Bar: each slot contains the CON modifier at creation.
   for (const pct of [10,20,30,40,50,60,70,80,90,100]) {
     setField(form, String(pct), d.healthSlot || '', { fontSize: 8 });
   }
 
-  // Stats: enhanced and unenhanced begin equal.
+  // Stats: Race/Class change Unenhanced; only equipment changes Enhanced.
+  // Time-of-day Stats are written "day/night" (see notes).
+  const unenhancedValues = unenhancedStats(state);
+  const enhancedValues = enhancedStats(state);
   for (const key of stats) {
     const [enhanced, unenhanced, modField] = statFields[key];
-    setField(form, enhanced, state.stats[key], { fontSize: 10 });
-    setField(form, unenhanced, state.stats[key], { fontSize: 10 });
-    setField(form, modField, withPlus(d.mods[key]), { fontSize: 10 });
+    const dayNight = d.statText[key].includes('/');
+    setField(form, enhanced, dayNight ? d.statText[key] : enhancedValues[key], { fontSize: dayNight ? 8 : 10 });
+    setField(form, unenhanced, dayNight ? d.statText[key] : unenhancedValues[key], { fontSize: dayNight ? 8 : 10 });
+    setField(form, modField, d.modText[key], { fontSize: dayNight ? 8 : 10 });
   }
 
   // Evade: active d20 check; do not invent a static total.
@@ -111,15 +149,16 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
 
   setField(form, 'Text Field 27', d.move, { fontSize: 9 });
   setField(form, 'Text Field 28', d.step, { fontSize: 9 });
+  // Damage Resistance: Armor + Buffs = DR Total. Race/Class DR is listed per source.
   clearField(form, 'Text Field 29');
-  clearField(form, 'Text Field 30');
-  clearField(form, 'Text Field 31');
+  setField(form, 'Text Field 30', d.dr.parts.map((x) => `+${x.value} (${x.from})`).join(' '), { fontSize: 8 });
+  setField(form, 'Text Field 31', d.dr.total || '', { fontSize: 9 });
   setField(form, 'Text Field 32', d.aiFavor, { fontSize: 9 });
   setField(form, 'Text Field 33', d.size, { fontSize: 8 });
 
   // Current Mana is 37; Max Mana is 38 in the actual form tree.
-  setField(form, 'Text Field 37', d.currentMana, { fontSize: 9 });
-  setField(form, 'Text Field 38', d.maxMana, { fontSize: 9 });
+  setField(form, 'Text Field 37', d.manaText ?? d.currentMana, { fontSize: 9 });
+  setField(form, 'Text Field 38', d.manaText ?? d.maxMana, { fontSize: 9 });
   clearField(form, 'Text Field 39');
   clearField(form, 'Text Field 40');
   clearField(form, 'Text Field 41');
@@ -132,8 +171,8 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     const attack = attacks[row];
     names.forEach((name) => clearField(form, name));
     if (!attack) continue;
-    const hitMod = attack.stat && attack.stat !== 'None' ? d.mods[attack.stat] : null;
-    const damageMod = attack.damageStat ? d.mods[attack.damageStat] : null;
+    const hitMod = attack.stat && attack.stat !== 'None' ? d.modText[attack.stat].replace(/\+/g, '') : null;
+    const damageMod = attack.damageStat ? d.modText[attack.damageStat].replace(/\+/g, '') : null;
     setField(form, names[0], attack.label || attack.name, { fontSize: 7 });
     setField(form, names[1], attack.rank, { fontSize: 8 });
     setField(form, names[2], hitMod || '', { fontSize: 8 });
@@ -157,7 +196,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 95', [state.clothing.Hands || '', ...held.map((x) => `Holding: ${gearText(x)}`)].filter(Boolean).join('\n'), { fontSize: 7, multiline: true });
   setField(form, 'Text Field 96', state.clothing.Legs || '', { fontSize: 8 });
   setField(form, 'Text Field 97', state.clothing.Feet || '', { fontSize: 8 });
-  clearField(form, 'Text Field 98'); // Popularity starts blank.
+  setField(form, 'Text Field 98', String(state.popularity ?? '').trim(), { fontSize: 8 }); // Blank at creation unless recorded.
   setField(form, 'Text Field 99', state.story.trauma, { fontSize: 8, multiline: true });
   setField(form, 'Text Field 100', state.story.looseEnd, { fontSize: 8, multiline: true });
   setField(form, 'Text Field 101', state.story.regret, { fontSize: 8, multiline: true });
@@ -169,25 +208,17 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     if (state.rulings[conflict.name]) reviewNotes.push(`${conflict.name} ruling: use ${state.rulings[conflict.name]}.`);
   }
   if (state.combatType === 'hand') reviewNotes.push('Paired hand-to-hand Damage Effect treated as Rank 3 per GM-approved interpretation.');
-  setField(form, 'Text Field 102', reviewNotes.join('\n'), { fontSize: 7, multiline: true });
+  if (d.dayNight) reviewNotes.push('Stats, Mods and Mana shown as two numbers: the first is daytime, the second is night time.');
+  // Race/Class benefits that aren't fully captured by numbers on the sheet.
+  for (const [label, entry] of [['Race', findRace(state.race)], ['Class', findClass(state.className)]]) {
+    const text = entry?.benefits.filter((_, i) => !entry.effects[i].length || entry.effects[i].some((x) => x.type === 'dayNight')) || [];
+    if (text.length) reviewNotes.push(`${label} (${entry.name}): ${text.join('; ')}`);
+  }
+  setField(form, 'Text Field 102', reviewNotes.join('\n'), { fontSize: reviewNotes.join('').length > 600 ? 5 : 7, multiline: true });
 
   // Page 3: Skills. Twenty rows, six field numbers apart because the checkbox occupies the sixth widget.
-  const skills = allSkills(state).slice(0, 20);
-  for (let row = 0; row < 20; row++) {
-    const base = 103 + row * 6;
-    for (let offset = 0; offset < 5; offset++) clearField(form, `Text Field ${base + offset}`);
-    const skill = skills[row];
-    if (!skill) continue;
-    let notes = skill.notes || '';
-    if (skill.name === 'Performance' && state.performance) notes = `Specialty: ${state.performance}. ${notes}`;
-    if (skill.conflict && state.rulings[skill.name]) notes = `GM ruling uses ${state.rulings[skill.name]}. ${notes}`;
-    if (skill.source) notes = `${skill.source}. ${notes}`;
-    setField(form, `Text Field ${base}`, skill.label || skill.name, { fontSize: 7.5 });
-    setField(form, `Text Field ${base + 1}`, skill.rank, { fontSize: 7.5 });
-    setField(form, `Text Field ${base + 2}`, skillStatText(skill, d.mods), { fontSize: 7 });
-    setField(form, `Text Field ${base + 3}`, skill.check || (skill.damageStat !== undefined ? 'Evade' : ''), { fontSize: 6.5 });
-    setField(form, `Text Field ${base + 4}`, compact(notes, 180), { fontSize: 6.2, multiline: true });
-  }
+  const skills = allSkills(state);
+  fillSkillRows(form, skills.slice(0, SKILL_ROWS), state, d);
 
   // Page 4: Inventory. Hotlist/holding/accessories are not duplicated here.
   const inventory = carried.filter((x) => x.location === 'inventory').slice(0, 20);
@@ -207,6 +238,12 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     form.updateFieldAppearances(font);
   } catch (error) {
     throw new Error(`A character-sheet field contains text the PDF font cannot encode. Remove unusual emoji/symbols and try again. (${error.message})`);
+  }
+
+  const extras = await overflowSkillPages(PDFDocument, StandardFonts.Helvetica, templateBytes, skills, state, d);
+  for (const [i, extra] of extras.entries()) {
+    const [page] = await pdfDoc.copyPages(extra, [SKILLS_PAGE_INDEX]);
+    pdfDoc.insertPage(SKILLS_PAGE_INDEX + 1 + i, page);
   }
 
   // Keep the AcroForm editable; do not flatten.

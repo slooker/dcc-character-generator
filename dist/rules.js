@@ -1,9 +1,11 @@
 import { attacks, utilitySkills, damageEffects } from './details.js';
+import { races, classes, skillCatalog } from './races-classes.js';
 
 // Source-bound rules for the first-draft builder.
 // Approved sources only:
 // - character-generation-rules.pdf (book pp. 101-115)
 // - skills-and-spells.pdf (book pp. 173-214)
+// - dcc-races.pdf (pp. 128-141) and dcc-classes.pdf (pp. 142-158) for Race & Class selection
 
 const parse = (rows) => rows.trim().split('\n').map((row) => {
   const [name, ...skills] = row.split('|');
@@ -220,6 +222,18 @@ export function initialState() {
     potionsSlot: '',
     attackSheet: [],
     handEffectApproved: false,
+    race: '',
+    className: '',
+    raceChoices: {},
+    classChoices: {},
+    floor: 1,
+    raceClassFloor: 3,
+    levelUps: [],
+    skillUps: [],
+    popularity: '',
+    achievements: '',
+    clubs: { desperado: false, vanquisher: false },
+    female: false,
   };
 }
 
@@ -240,6 +254,11 @@ export function normalizeState(raw) {
   merged.items = Array.isArray(raw.items) && raw.items.length ? raw.items : base.items;
   merged.attackSheet = Array.isArray(raw.attackSheet) ? raw.attackSheet : [];
   merged.rulings = { ...(raw.rulings || {}) };
+  merged.clubs = { ...base.clubs, ...(raw.clubs || {}) };
+  merged.raceChoices = raw.raceChoices && typeof raw.raceChoices === 'object' ? raw.raceChoices : {};
+  merged.classChoices = raw.classChoices && typeof raw.classChoices === 'object' ? raw.classChoices : {};
+  merged.levelUps = Array.isArray(raw.levelUps) ? raw.levelUps : [];
+  merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
   return merged;
 }
 
@@ -288,7 +307,8 @@ export function combatSkills(state) {
   return [starting, { name: state.combat, label, ...attacks[state.combat], rank: 3, source: 'Chosen combat' }];
 }
 
-export function allSkills(state) {
+// Skills from Backgrounds, combat and Heal, before any Race/Class bonuses.
+export function baseSkills(state) {
   const skills = [...selectedSkills(state), ...combatSkills(state)];
   if (state.combatType === 'hand' && handToHand[state.combat]) {
     const name = handToHand[state.combat];
@@ -323,26 +343,447 @@ export function attackRowsForSheet(state) {
   return attacksAvailable.filter((x) => selected.has(x.name)).slice(0, 5);
 }
 
+// Race & Class selection (dcc-races.pdf p. 128 onward, dcc-classes.pdf p. 142
+// onward). Requirement types are documented in tools/build_race_class_data.py.
+const clubKeys = { 'Desperado Club': 'desperado', 'Club Vanquisher': 'vanquisher' };
+
+export function findRace(name) {
+  return races.find((x) => x.name === name) || null;
+}
+
+export function findClass(name) {
+  return classes.find((x) => x.name === name) || null;
+}
+
+export function skillRanks(skills) {
+  const ranks = new Map();
+  skills.forEach((skill) => {
+    const key = skill.name.toLowerCase();
+    ranks.set(key, Math.max(ranks.get(key) || 0, Number(skill.rank) || 0));
+  });
+  return ranks;
+}
+
+export function achievementList(state) {
+  return String(state.achievements || '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+}
+
+// Race & Class bonuses (p. 128; user rulings): Skill/Spell bonuses add Ranks
+// immediately, a Skill the crawler lacks is gained at the bonus Rank, and
+// totals cap at Rank 10 during selection. Stat changes go to the Unenhanced
+// Stat; only equipment changes Enhanced.
+export const SELECTION_RANK_CAP = 10;
+const catalogByKey = new Map(skillCatalog.map((x) => [x.name.toLowerCase(), x]));
+
+// Each effect of an entry with its choice key ("bullet.effect") and the
+// player's choice, if the effect needs one.
+export function entryEffects(entry, choices = {}) {
+  if (!entry) return [];
+  return entry.effects.flatMap((list, bullet) => list.map((effect, part) => {
+    const key = `${bullet}.${part}`;
+    return { ...effect, key, bullet, benefit: entry.benefits[bullet], chosen: choices?.[key] };
+  }));
+}
+
+export function pickedSkills(effect) {
+  const picks = Array.isArray(effect.chosen) ? effect.chosen : [];
+  return [...new Set(picks.filter((name) => effect.options.includes(name)))].slice(0, effect.count);
+}
+
+export function splitValues(effect) {
+  const chosen = effect.chosen && typeof effect.chosen === 'object' ? effect.chosen : {};
+  return Object.fromEntries(effect.stats.map((stat) => [stat, Math.max(0, Math.trunc(Number(chosen[stat]) || 0))]));
+}
+
+const detailTables = [attacks, utilitySkills, damageEffects];
+
+function skillDetail(name) {
+  const key = name.toLowerCase();
+  for (const table of detailTables) {
+    const match = Object.keys(table).find((x) => x.toLowerCase() === key);
+    if (match) return table[match];
+  }
+  return null;
+}
+
+function catalogSkill(name, rank, source) {
+  const entry = catalogByKey.get(name.toLowerCase());
+  // A custom Skill such as "Creepy Chains (Club)" uses its parenthesized Skill.
+  const usesSkill = entry?.custom ? entry.name.match(/\((.+)\)$/)?.[1] : null;
+  const detail = skillDetail(usesSkill || entry?.name || name);
+  return {
+    ...(detail || {}),
+    name: entry?.name || name,
+    label: entry?.name || name,
+    stat: detail?.stat || entry?.stat || 'None',
+    // Attacks roll against Evade; otherwise the catalog only tells us Passive.
+    check: detail?.check || (entry?.attack ? 'Evade' : entry?.passive ? 'Passive' : ''),
+    page: detail?.page || entry?.page,
+    rank,
+    sources: source ? [source] : [],
+  };
+}
+
+function applyEntrySkills(skills, entry, choices, from) {
+  const credit = (skill, bonus) => {
+    skill.sources = [...skill.sources, `${from} ${bonus > 0 ? '+' : ''}${bonus}`];
+  };
+  const add = (name, bonus) => {
+    const current = skills.get(name.toLowerCase());
+    if (current) {
+      current.rank += bonus;
+      credit(current, bonus);
+    } else if (bonus > 0) {
+      skills.set(name.toLowerCase(), catalogSkill(name, bonus, `${from} +${bonus}`));
+    }
+  };
+  entryEffects(entry, choices).forEach((effect) => {
+    if (effect.type === 'skill') effect.skills.forEach((name) => add(name, effect.bonus));
+    if (effect.type === 'skillPick') pickedSkills(effect).forEach((name) => add(name, effect.bonus));
+    if (effect.type === 'skillGroup' && effect.min === undefined) {
+      // "+2 in all Charisma-based Skills" grants every Skill in the group (p. 128 + user ruling).
+      effect.skills.forEach((name) => add(name, effect.bonus));
+    } else if (effect.type === 'skillGroup') {
+      // "−3 Ranks in all Strength Skills (to a minimum of 1 Rank if you have any
+      // Ranks)" only changes Skills the crawler has.
+      const names = new Set(effect.skills.map((x) => x.toLowerCase()));
+      skills.forEach((skill, key) => {
+        if (!names.has(key)) return;
+        skill.rank = Math.max(effect.min, skill.rank + effect.bonus);
+        credit(skill, effect.bonus);
+      });
+    }
+  });
+}
+
+// Rank limits outside Race/Class selection (p. 128; user rulings): 15, or 20
+// for Skills a Race/Class allows. Ranks 16+ don't come online until Floor 6.
+export const RANK_CAP = 15;
+export const EXTENDED_RANK_CAP = 20;
+export const HIGH_RANK_FLOOR = 6;
+export const LEVEL_STAT_POINTS = 3;
+
+const positiveInt = (value, fallback = null) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 ? n : fallback;
+};
+
+export function currentFloor(state) {
+  return positiveInt(state.floor, 1);
+}
+
+// The floor the Race/Class was chosen on (Third Floor by default, p. 128).
+export function raceClassFloor(state) {
+  return positiveInt(state.raceClassFloor, 3);
+}
+
+export function level(state) {
+  return 1 + (state.levelUps || []).length;
+}
+
+// Skill-ups logged before the Race/Class floor happen before selection.
+function beforeSelection(state, entry) {
+  return Boolean(state.race || state.className) && positiveInt(entry.floor, 1) < raceClassFloor(state);
+}
+
+export function rankLimit(state, name) {
+  const key = name.toLowerCase();
+  const allows = raceClassEffects(state).some((effect) => {
+    if (effect.type === 'rankLimit') return effect.all || effect.skills.some((x) => x.toLowerCase() === key);
+    if (effect.type === 'rankLimitPick') return pickedSkills(effect).some((x) => x.toLowerCase() === key);
+    return false;
+  });
+  return allows ? EXTENDED_RANK_CAP : RANK_CAP;
+}
+
+function applySkillUps(state, skills, entries, capFor, report) {
+  entries.forEach(({ entry, index }) => {
+    const ranks = positiveInt(entry.ranks);
+    if (!entry.skill || !ranks) return;
+    const key = entry.skill.toLowerCase();
+    if (!skills.has(key)) {
+      if (!catalogByKey.has(key)) return;
+      skills.set(key, catalogSkill(entry.skill, 0, ''));
+    }
+    const skill = skills.get(key);
+    const before = skill.rank;
+    const cap = capFor(skill.name);
+    const after = Math.max(before, Math.min(cap, before + ranks));
+    skill.rank = after;
+    if (after > before) skill.sources = [...skill.sources, `Floor ${positiveInt(entry.floor, 1)} +${after - before}`];
+    report[index] = { skill: skill.name, before, after, wasted: before + ranks - after, cap };
+  });
+}
+
+// Skills in the order things happened: starting Skills, skill-ups before the
+// Race/Class floor (cap 15), Race then Class bonuses (cap 10 during selection;
+// a Skill already at 10+ gains nothing), then later skill-ups (cap 15/20).
+// `raceName` and the include flags let prerequisites check earlier moments.
+function computeSkills(state, { raceName = state.race, includeRace = true, includeClass = true, includeAfter = true } = {}) {
+  const skills = new Map(baseSkills(state).map((skill) => [skill.name.toLowerCase(), { ...skill, sources: [skill.source].filter(Boolean) }]));
+  const report = [];
+  const ups = (state.skillUps || []).map((entry, index) => ({ entry, index }));
+  const early = ups.filter(({ entry }) => beforeSelection(state, entry));
+  const late = ups.filter(({ entry }) => !beforeSelection(state, entry));
+  applySkillUps(state, skills, early, () => RANK_CAP, report);
+
+  const preRank = new Map([...skills].map(([key, skill]) => [key, skill.rank]));
+  const race = includeRace ? findRace(raceName) : null;
+  if (race) applyEntrySkills(skills, race, raceName === state.race ? state.raceChoices : {}, 'Race');
+  const cls = includeClass ? findClass(state.className) : null;
+  if (cls) applyEntrySkills(skills, cls, state.classChoices, 'Class');
+  skills.forEach((skill, key) => {
+    const raw = skill.rank;
+    if (raw > SELECTION_RANK_CAP) skill.rank = Math.max(preRank.get(key) || 0, SELECTION_RANK_CAP);
+    skill.wasted = Math.max(0, raw - skill.rank);
+  });
+
+  if (includeAfter) applySkillUps(state, skills, late, (name) => rankLimit(state, name), report);
+  const list = [...skills.values()].map((skill) => {
+    const notes = [skill.notes];
+    if (skill.wasted) notes.push(`${skill.wasted} Race/Class Rank${skill.wasted === 1 ? '' : 's'} over the Rank ${SELECTION_RANK_CAP} selection cap wasted.`);
+    if (skill.rank > RANK_CAP && currentFloor(state) < HIGH_RANK_FLOOR) notes.push(`Ranks above ${RANK_CAP} come online on Floor ${HIGH_RANK_FLOOR}.`);
+    return { ...skill, source: skill.sources.join('; '), notes: notes.filter(Boolean).join(' ') };
+  });
+  return { skills: list, report };
+}
+
+export function skillsWithRaceClass(state, options = {}) {
+  return computeSkills(state, options).skills;
+}
+
+export function allSkills(state) {
+  return computeSkills(state).skills;
+}
+
+// Per skill-up entry: { skill, before, after, wasted, cap }.
+export function skillUpReport(state) {
+  return computeSkills(state).report;
+}
+
+function raceClassEffects(state) {
+  return [
+    ...entryEffects(findRace(state.race), state.raceChoices).map((x) => ({ ...x, from: 'Race' })),
+    ...entryEffects(findClass(state.className), state.classChoices).map((x) => ({ ...x, from: 'Class' })),
+  ];
+}
+
+// Stat points a level-up entry assigns (each level adds 3, any Stats).
+export function levelPoints(entry) {
+  return Object.fromEntries(stats.map((key) => [key, Math.max(0, Math.trunc(Number(entry?.stats?.[key]) || 0))]));
+}
+
+// Assigned Standard Array plus Race/Class changes and level points, then any caps.
+export function unenhancedStats(state) {
+  const out = Object.fromEntries(stats.map((key) => [key, state.stats?.[key] === '' || state.stats?.[key] == null ? '' : Number(state.stats[key])]));
+  const effects = raceClassEffects(state);
+  const add = (stat, n) => { if (out[stat] !== '') out[stat] += n; };
+  effects.forEach((effect) => {
+    if (effect.type === 'stat') Object.entries(effect.stats).forEach(([stat, n]) => add(stat, n));
+    if (effect.type === 'statSplit') Object.entries(splitValues(effect)).forEach(([stat, n]) => add(stat, n));
+  });
+  (state.levelUps || []).forEach((entry) => Object.entries(levelPoints(entry)).forEach(([stat, n]) => add(stat, n)));
+  effects.filter((x) => x.type === 'statCap').forEach((x) => {
+    if (out[x.stat] !== '') out[x.stat] = Math.min(out[x.stat], x.max);
+  });
+  // A Stat can't drop below 1 (user ruling).
+  stats.forEach((key) => { if (out[key] !== '') out[key] = Math.max(1, out[key]); });
+  return out;
+}
+
+// Only equipment changes Enhanced Stats; no equipped gear grants Stat bonuses yet.
+export function enhancedStats(state) {
+  return unenhancedStats(state);
+}
+
+// Time-of-day Stats (Lajabless, p. 136): additions first, then halving/doubling
+// (rounded down, minimum 1). Null when no chosen Race/Class has them.
+export function dayNightStats(state) {
+  const effects = raceClassEffects(state).filter((x) => x.type === 'dayNight');
+  if (!effects.length) return null;
+  const base = enhancedStats(state);
+  const period = (name) => {
+    const out = { ...base };
+    effects.forEach((x) => Object.entries(x[name].add || {}).forEach(([stat, n]) => { if (out[stat] !== '') out[stat] += n; }));
+    effects.forEach((x) => Object.entries(x[name].multiply || {}).forEach(([stat, f]) => {
+      if (out[stat] !== '') out[stat] = Math.max(1, Math.floor(out[stat] * f));
+    }));
+    return out;
+  };
+  return { day: period('day'), night: period('night') };
+}
+
+export function damageResistance(state) {
+  const parts = raceClassEffects(state).filter((x) => x.type === 'dr').map((x) => ({ value: x.value, from: x.from }));
+  return { parts, armor: 0, total: parts.reduce((sum, x) => sum + x.value, 0) };
+}
+
+// Choices still needed for the chosen Race/Class, with a readable prompt.
+export function raceClassChoiceIssues(state) {
+  const out = [];
+  [['Race', findRace(state.race), state.raceChoices], ['Class', findClass(state.className), state.classChoices]].forEach(([label, entry, choices]) => {
+    entryEffects(entry, choices).forEach((effect) => {
+      if ((effect.type === 'skillPick' || effect.type === 'rankLimitPick') && pickedSkills(effect).length !== effect.count) {
+        out.push(`${entry.name} ${label}: choose ${effect.count === 1 ? 'one' : effect.count} for “${effect.benefit}”.`);
+      }
+      if (effect.type === 'statSplit') {
+        const spent = Object.values(splitValues(effect)).reduce((a, b) => a + b, 0);
+        if (spent !== effect.total) out.push(`${entry.name} ${label}: split exactly ${effect.total} points for “${effect.benefit}” (${spent} assigned).`);
+      }
+    });
+  });
+  return out;
+}
+
+function catSpecies(state) {
+  return state.kind === 'animal' && /\bcats?\b/i.test(String(state.species || ''));
+}
+
+// Without a chosen Race the crawler keeps their entering Race (p. 128); every
+// starting origin in the supplied creation rules is Earth-based.
+function raceContext(state, raceName) {
+  const race = findRace(raceName);
+  if (race) return { name: race.name, earth: race.earth, cannotWorship: race.cannotWorship };
+  return { name: state.kind === 'human' ? 'Human' : catSpecies(state) ? 'Cat' : '', earth: true, cannotWorship: false };
+}
+
+function requirementIssue(state, requirement, skills, race) {
+  const ranks = skillRanks(skills);
+  const popularity = Number(state.popularity) || 0;
+  switch (requirement.type) {
+    case 'skillRank':
+      return requirement.skills.some((name) => (ranks.get(name.toLowerCase()) || 0) >= requirement.min)
+        ? null : `Rank ${requirement.min}+ in ${requirement.skills.join(' or ')}`;
+    case 'skillStatRank':
+      return skills.some((skill) => requirement.stats.includes(skill.stat) && Number(skill.rank) >= requirement.min)
+        ? null : `a ${requirement.stats.join(' or ')}-based Skill at Rank ${requirement.min}+`;
+    case 'animalSpecies':
+      return catSpecies(state) ? null : `already being a ${requirement.species}`;
+    case 'race':
+      return requirement.races.includes(race.name) ? null : `a ${requirement.races.join(', ')} Race`;
+    case 'earthRace':
+      return race.earth ? null : 'an Earth-based Race';
+    case 'popularity':
+      return popularity >= requirement.min ? null : `Popularity ${requirement.min}+`;
+    case 'achievement':
+      return achievementList(state).some((x) => x.toLowerCase() === requirement.name.toLowerCase())
+        ? null : `the ${requirement.name} achievement`;
+    case 'female':
+      return state.female ? null : 'a female crawler';
+    case 'noClub':
+      return state.clubs?.[clubKeys[requirement.club]] ? `no access to the ${requirement.club}` : null;
+    case 'worshipAllowed':
+      return race.cannotWorship ? `a Race that can worship a deity (${race.name} cannot)` : null;
+    default:
+      return `an unknown requirement (${requirement.type})`;
+  }
+}
+
+// Unmet requirements for a Race or Class entry, as short phrases. A Class is
+// checked against `raceName` (default: the crawler's chosen Race).
+export function raceClassRequirementIssues(state, entry, raceName = state.race) {
+  if (!entry) return ['an entry from the supplied Race/Class lists'];
+  // Race comes before Class (p. 128): Races check base Skills; Classes check
+  // Skills after that Race's bonuses.
+  const skills = skillsWithRaceClass(state, { raceName, includeRace: !races.includes(entry), includeClass: false, includeAfter: false });
+  const race = raceContext(state, raceName);
+  return entry.requires.map((x) => requirementIssue(state, x, skills, race)).filter(Boolean);
+}
+
+export function eligibleRaces(state) {
+  return races.filter((race) => raceClassRequirementIssues(state, race).length === 0);
+}
+
+export function eligibleClasses(state, raceName = state.race) {
+  return classes.filter((entry) => raceClassRequirementIssues(state, entry, raceName).length === 0);
+}
+
+export function raceClassErrors(state) {
+  const out = [];
+  if (state.race) {
+    const issues = raceClassRequirementIssues(state, findRace(state.race));
+    if (issues.length) out.push(`${state.race} Race requires ${issues.join('; ')}.`);
+  }
+  if (state.className) {
+    const issues = raceClassRequirementIssues(state, findClass(state.className));
+    if (issues.length) out.push(`${state.className} Class requires ${issues.join('; ')}.`);
+  }
+  const popularity = String(state.popularity ?? '').trim();
+  if (popularity && !/^\d{1,4}$/.test(popularity)) out.push('Popularity must be a whole number of 0 or more.');
+  out.push(...raceClassChoiceIssues(state));
+  if (state.race || state.className) {
+  }
+  return out;
+}
+
+// Levels and skill-ups (user design): each level-up assigns exactly 3 Stat
+// points; skill-ups are a log of Skill/Spell Ranks gained, with the floor.
+export function advancementErrors(state) {
+  const out = [];
+  if (!positiveInt(state.floor)) out.push('Current Floor must be a whole number of 1 or more.');
+  if ((state.race || state.className) && !positiveInt(state.raceClassFloor)) out.push('The floor the Race/Class was chosen on must be a whole number of 1 or more.');
+  (state.levelUps || []).forEach((entry, i) => {
+    const spent = Object.values(levelPoints(entry)).reduce((a, b) => a + b, 0);
+    if (spent !== LEVEL_STAT_POINTS) out.push(`Level ${i + 2}: assign exactly ${LEVEL_STAT_POINTS} Stat points (${spent} assigned).`);
+    if (!positiveInt(entry.floor)) out.push(`Level ${i + 2}: the floor must be a whole number of 1 or more.`);
+  });
+  const known = new Set(allSkills(state).map((x) => x.name.toLowerCase()));
+  (state.skillUps || []).forEach((entry, i) => {
+    const name = String(entry.skill || '').toLowerCase();
+    if (!name || !(known.has(name) || catalogByKey.has(name))) out.push(`Skill-up ${i + 1}: choose a Skill or Spell.`);
+    if (!positiveInt(entry.ranks)) out.push(`Skill-up ${i + 1}: Ranks gained must be 1 or more.`);
+    if (!positiveInt(entry.floor)) out.push(`Skill-up ${i + 1}: the floor must be a whole number of 1 or more.`);
+  });
+  return out;
+}
+
+// Human: "Gain 1 AI Favor each time you level up" (p. 135) — levels gained on
+// or after the floor the Human Race was chosen.
+function humanLevelFavor(state) {
+  if (state.race !== 'Human') return 0;
+  return (state.levelUps || []).filter((x) => positiveInt(x.floor, 1) >= raceClassFloor(state)).length;
+}
+
 export function evadeBuff(state) {
-  return selectedSkills(state).some((x) => x.name === 'Dodge') ? 1 : 0;
+  return allSkills(state).some((x) => x.name === 'Dodge') ? 1 : 0;
 }
 
 export function derived(state) {
-  const mods = Object.fromEntries(stats.map((key) => [key, statMod(Number(state.stats[key]))]));
+  const enhanced = enhancedStats(state);
+  const mods = Object.fromEntries(stats.map((key) => [key, statMod(Number(enhanced[key]))]));
+  // Sheet text: "day/night" when a Stat changes with the time of day.
+  const dayNight = dayNightStats(state);
+  const plus = (n) => (n ? `+${n}` : '');
+  const pair = (fn, key) => {
+    if (!dayNight || dayNight.day[key] === dayNight.night[key]) return null;
+    return `${fn(dayNight.day[key])}/${fn(dayNight.night[key])}`;
+  };
+  const statText = Object.fromEntries(stats.map((key) => [key, pair((v) => v, key) ?? (enhanced[key] === '' ? '' : String(enhanced[key]))]));
+  const modText = Object.fromEntries(stats.map((key) => [key, pair((v) => plus(statMod(v)), key) ?? plus(mods[key])]));
   const con = mods.Con;
-  const intScore = Number(state.stats.Int);
+  const intScore = Number(enhanced.Int);
+  const effects = raceClassEffects(state);
+  const raceSize = effects.find((x) => x.type === 'size' && x.from === 'Race')?.value;
+  const moveBonus = effects.filter((x) => x.type === 'move').reduce((sum, x) => sum + x.value, 0);
   return {
     mods,
     health: con ? con * 10 : null,
     healthSlot: con || null,
     maxMana: Number.isFinite(intScore) && intScore > 0 ? intScore : null,
+    manaText: pair((v) => v, 'Int'),
+    statText,
+    modText,
+    dayNight: Boolean(dayNight),
     currentMana: Number.isFinite(intScore) && intScore > 0 ? intScore : null,
     evadeDex: mods.Dex,
     evadeBuff: evadeBuff(state),
-    move: 20,
+    move: 20 + moveBonus,
     step: 10,
-    aiFavor: state.kind === 'human' ? 1 : state.kind === 'animal' ? 0 : null,
-    size: state.kind === 'human' ? 'Medium (4)' : sizeNames[String(state.size)] || '',
+    aiFavor: state.kind === 'human' ? 1 + humanLevelFavor(state) : state.kind === 'animal' ? 0 + humanLevelFavor(state) : null,
+    level: level(state),
+    floor: currentFloor(state),
+    size: raceSize || (state.kind === 'human' ? 'Medium (4)' : sizeNames[String(state.size)] || ''),
+    dr: damageResistance(state),
   };
 }
 
@@ -550,14 +991,18 @@ export function errors(state) {
   const mandatoryAttack = state.combat && attacks[state.combat] ? state.combat : null;
   if (mandatoryAttack && !attackRowsForSheet(state).some((x) => x.name === mandatoryAttack)) out.push('The chosen combat option must appear in the front-page Attacks list.');
   if (new Set(state.attackSheet || []).size > (mandatoryAttack ? 4 : 5)) out.push('The front-page Attacks list has only five rows, including the required chosen combat option.');
+  out.push(...raceClassErrors(state));
+  out.push(...advancementErrors(state));
 
   return [...new Set(out)];
 }
 
 export function missingDetails(state) {
   const notes = [
-    'This builder creates the starting crawler described by the supplied character-creation pages. Class selection, Race changes, and the complete Level 10 / Third Floor advancement process are outside these supplied sources.',
+    'The complete Level 10 / Third Floor advancement process is not built yet.',
   ];
+  if (state.race || state.className) notes.push('Race and Class Stat, Skill, Spell, DR, Size and Move bonuses are applied. Situational benefits are written to the sheet notes for your GM.');
+  if (findClass(state.className)?.requires.some((x) => x.type === 'worshipAllowed')) notes.push(`${state.className} must worship a deity (p. 163). Deity selection is not built yet.`);
   if (state.healSlot === '') notes.push('Heal is known but not placed in the Hotlist; the spell rules say Spells must be in the Hotlist for combat or other stressful situations.');
   if (state.combatType === 'hand') notes.push('The Bronze Weapon Box’s weapon and drawback are not defined by the supplied creation pages; the GM determines them.');
   if (['Mind Tickle', 'Vine Porn'].includes(state.combat)) notes.push('The sheet uses the listed base Mana cost. These Spells are Favored by a Class, but no Class is assigned by the supplied starting-crawler rules.');
@@ -578,6 +1023,8 @@ export function stepCompletion(state) {
     gear: (state.items || []).filter((x) => x.kind === 'useful' && x.name?.trim()).length === 1 && (state.items || []).some((x) => x.kind === 'weird' && x.name?.trim()) && (state.combatType !== 'weapon' || state.weaponLocation),
     hotlist: state.combatType !== 'spell' || (state.spellSlot !== '' && state.potionsSlot !== ''),
     attacks: !state.combat || attackRowsForSheet(state).some((x) => x.name === state.combat),
+    raceclass: raceClassErrors(state).length === 0,
+    advancement: advancementErrors(state).length === 0,
     review: errors(state).length === 0,
   };
 }

@@ -3,7 +3,11 @@ import {
   initialState, normalizeState, selectedSkills, selectedNames, allSkills, allAttacks,
   attackRowsForSheet, derived, carriedItems, hotlist, errors, missingDetails,
   conflicts, stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
+  findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
+  entryEffects, splitValues, unenhancedStats, SELECTION_RANK_CAP,
+  skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
 } from './rules.js';
+import { races, classes, skillCatalog } from './races-classes.js';
 import { attacks, damageEffects } from './details.js';
 import { downloadCharacterSheet } from './pdf.js';
 
@@ -17,6 +21,8 @@ const steps = [
   ['gear', 'Starting Gear'],
   ['hotlist', 'Hotlist'],
   ['attacks', 'Sheet Attacks'],
+  ['raceclass', 'Race & Class'],
+  ['advancement', 'Level & Skills'],
   ['review', 'Review & PDF'],
 ];
 
@@ -26,6 +32,10 @@ let activeBackgroundStage = 0;
 let exporting = false;
 let draggedHotlistSlot = null;
 let touchHotlistDrag = null;
+// Unsaved "next level" and "new skill-up" forms on the Level & Skills step.
+let levelDraft = { floor: '', stats: {} };
+let skillUpDraft = { skill: '', ranks: '1', floor: '', how: 'Skill Advancement Check', note: '' };
+const SKILL_UP_METHODS = ['Skill Advancement Check', 'Training', 'Potion or item', 'Other'];
 
 const $ = (selector) => document.querySelector(selector);
 const main = $('#main');
@@ -223,23 +233,26 @@ function renderSummary() {
   const mods = d.mods;
   const completion = stepCompletion(state);
   const completedCount = Object.entries(completion).filter(([key, value]) => key !== 'review' && value).length;
-  const race = state.kind === 'human' ? 'Human' : state.kind === 'animal' ? state.species || 'Animal' : '—';
+  const totalSteps = steps.length - 1;
+  const origin = state.kind === 'human' ? 'Human' : state.kind === 'animal' ? state.species || 'Animal' : '—';
+  const race = [state.race || origin, state.className].filter(Boolean).join(' · ');
   summary.innerHTML = `
     <div class="aside-top">LIVE CRAWLER FILE</div>
     <div class="crawler-name">${esc(state.name || 'Unnamed Crawler')}</div>
     <div class="muted micro">#${esc(state.number)} · ${esc(race)}</div>
-    <div class="stat-strip">${stats.map((key) => `<div><small>${key.toUpperCase()}</small><b>${state.stats[key] || '—'}</b><span>${mods[key] ? `+${mods[key]}` : ''}</span></div>`).join('')}</div>
+    <div class="stat-strip">${stats.map((key) => `<div><small>${key.toUpperCase()}</small><b>${d.statText[key] || '—'}</b><span>${d.modText[key]}</span></div>`).join('')}</div>
     <dl>
       <div><dt>Health</dt><dd>${d.health ?? '—'}</dd></div>
-      <div><dt>Mana</dt><dd>${d.maxMana ?? '—'}</dd></div>
+      <div><dt>Mana</dt><dd>${d.manaText ?? d.maxMana ?? '—'}</dd></div>
       <div><dt>Evade</dt><dd>${d.evadeDex ? `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}` : '—'}</dd></div>
       <div><dt>Move / Step</dt><dd>${d.move} / ${d.step} ft</dd></div>
       <div><dt>AI Favor</dt><dd>${d.aiFavor ?? '—'}</dd></div>
       <div><dt>Size</dt><dd>${esc(d.size || '—')}</dd></div>
+      ${d.dr.total ? `<div><dt>DR</dt><dd>${d.dr.total}</dd></div>` : ''}
     </dl>
     <div class="divider"></div>
-    <div class="muted micro">Progress ${completedCount}/8</div>
-    <div class="meter ${completedCount === 8 ? 'ready' : ''}">${Array.from({ length: 8 }, (_, i) => `<i class="${i < completedCount ? 'filled' : ''}"></i>`).join('')}</div>
+    <div class="muted micro">Progress ${completedCount}/${totalSteps}</div>
+    <div class="meter ${completedCount === totalSteps ? 'ready' : ''}">${Array.from({ length: totalSteps }, (_, i) => `<i class="${i < completedCount ? 'filled' : ''}"></i>`).join('')}</div>
     ${state.combat ? `<span class="tag">${esc(state.combat)}</span>` : ''}
   `;
 }
@@ -533,13 +546,13 @@ function attacksStep() {
         const mandatory = attack.name === chosen;
         const checked = mandatory || selectedSet.has(attack.name);
         const rank = attack.rank;
-        const hit = attack.stat === 'None' ? '—' : `${attack.stat} +${statMod(Number(state.stats[attack.stat])) || '?'}`;
+        const hit = attack.stat === 'None' ? '—' : `${attack.stat} ${derived(state).modText[attack.stat] || '?'}`;
         const dmg = `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}`;
         return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${mandatory ? ' · required' : ''}</small></span></label>`;
       }).join('')}</div>
       <div class="callout">The supplied sheet has five rows. If you know more than five Attack Skills, choose which non-required ones are most useful to show here.</div>
     </section>
-    ${actions('hotlist', 'review')}
+    ${actions('hotlist', 'raceclass')}
   `;
 }
 
@@ -571,7 +584,7 @@ function reviewStep() {
   const skills = allSkills(state);
   const attacksForSheet = attackRowsForSheet(state);
   return `
-    <p class="eyebrow">STEP 9 · REVIEW & EXPORT</p>
+    <p class="eyebrow">STEP 11 · REVIEW & EXPORT</p>
     <h1>${issues.length ? 'Finish the crawler.' : 'Crawler ready for the sheet.'}</h1>
     <p class="intro">Nothing is randomly assigned except the crawler number. Mandatory calculations are derived automatically from your choices.</p>
     ${conflictReview()}
@@ -582,7 +595,7 @@ function reviewStep() {
     </section>
     <section class="panel review-grid-panel">
       <div class="review-grid">
-        <div><h3>Identity</h3><p>${esc(state.name)} · #${esc(state.number)}<br>${state.kind === 'human' ? 'Human' : esc(state.species)} · ${esc(d.size)}</p></div>
+        <div><h3>Identity</h3><p>${esc(state.name)} · #${esc(state.number)}<br>${state.kind === 'human' ? 'Human' : esc(state.species)} · ${esc(d.size)}${state.race || state.className ? `<br>${esc([state.race && `Race: ${state.race}`, state.className && `Class: ${state.className}`].filter(Boolean).join(' · '))}` : ''}</p></div>
         <div><h3>Vitals</h3><p>Health ${d.health ?? '—'} · Mana ${d.maxMana ?? '—'}<br>Move ${d.move} · Step ${d.step} · AI Favor ${d.aiFavor ?? '—'}</p></div>
         <div class="wide"><h3>Skills (${skills.length})</h3><p>${skills.map((x) => `${esc(x.label || x.name)} R${x.rank}`).join(' · ')}</p></div>
         <div class="wide"><h3>Front-page Attacks (${attacksForSheet.length}/5)</h3><p>${attacksForSheet.map((x) => esc(x.label || x.name)).join(' · ') || 'None selected'}</p></div>
@@ -593,12 +606,182 @@ function reviewStep() {
       <ul class="issues neutral">${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
     </section>
     <div class="actions">
-      <button class="secondary" data-nav="attacks">Back</button>
+      <button class="secondary" data-nav="advancement">Back</button>
       <div class="action-right">
         <button class="secondary danger-button" data-action="new-crawler">Start a new crawler</button>
         <button class="primary" data-action="download" ${issues.length || exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : 'Download filled character sheet'}</button>
       </div>
     </div>
+  `;
+}
+
+function raceClassCard(entry, kind, selected) {
+  const types = entry.classTypes?.length ? ` · ${entry.classTypes.join(', ')}` : '';
+  return `<article class="rc-card ${selected ? 'selected' : ''}">
+    <div class="rc-head"><strong>${esc(entry.name)}</strong><span class="tag">${entry.earth ? 'Earth' : kind === 'race' ? 'Alien' : 'Any Race'}</span></div>
+    <p class="muted micro">${sourceRef(`p. ${entry.page}`)}${esc(types)}${entry.prerequisite ? ` · Limited: ${esc(entry.prerequisite)}` : ''}</p>
+    <details><summary>${entry.benefits.length} benefits</summary><ul>${entry.benefits.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></details>
+    <button type="button" class="${selected ? 'secondary' : 'primary'}" data-${kind}="${esc(entry.name)}" aria-pressed="${selected}">${selected ? 'Selected' : `Choose ${kind === 'race' ? 'Race' : 'Class'}`}</button>
+  </article>`;
+}
+
+function ineligibleSelection(entry, kind, issues) {
+  return `<div class="callout warn">Your selected ${kind === 'race' ? 'Race' : 'Class'}, <strong>${esc(entry?.name || '')}</strong>, now requires ${esc(issues.join('; '))}.
+    <button type="button" class="secondary" data-clear="${kind}">Remove ${kind === 'race' ? 'Race' : 'Class'}</button></div>`;
+}
+
+function choiceControls(kind, entry, choices) {
+  const effects = entryEffects(entry, choices).filter((x) => ['skillPick', 'rankLimitPick', 'statSplit'].includes(x.type));
+  if (!effects.length) return '';
+  return `<div class="rc-choices"><h3>${esc(entry.name)} choices</h3>${effects.map((effect) => {
+    if (effect.type === 'statSplit') {
+      const values = splitValues(effect);
+      const spent = Object.values(values).reduce((a, b) => a + b, 0);
+      return `<div class="rc-choice"><p>${esc(effect.benefit)} <span class="${spent === effect.total ? 'success' : 'error'}">${spent}/${effect.total}</span></p>
+        <div class="rc-split">${effect.stats.map((stat) => `<label class="field">${esc(statNames[stat])}<input type="number" min="0" max="${effect.total}" data-split="${kind}|${effect.key}|${stat}" value="${values[stat] || ''}" placeholder="0"></label>`).join('')}</div></div>`;
+    }
+    const slots = Array.isArray(effect.chosen) ? effect.chosen : [];
+    return `<div class="rc-choice"><p>${esc(effect.benefit)}</p><div class="rc-split">${Array.from({ length: effect.count }, (_, i) => `
+      <label class="field">${effect.count > 1 ? `Choice ${i + 1}` : 'Choice'}<select data-pick="${kind}|${effect.key}|${i}">
+        <option value="">Choose…</option>
+        ${effect.options.map((name) => `<option value="${esc(name)}" ${slots[i] === name ? 'selected' : ''} ${slots.includes(name) && slots[i] !== name ? 'disabled' : ''}>${esc(name)}</option>`).join('')}
+      </select></label>`).join('')}</div></div>`;
+  }).join('')}</div>`;
+}
+
+function raceClassResults() {
+  if (!state.race && !state.className) return '';
+  const before = Object.fromEntries(stats.map((key) => [key, state.stats[key]]));
+  const after = unenhancedStats(state);
+  const d = derived(state);
+  const changed = allSkills(state).filter((x) => /Race|Class/.test(x.source || ''));
+  return `<section class="panel">
+    <div class="panel-head"><h2>Applied to this crawler</h2>${sourceRef('p. 128')}</div>
+    <div class="table-wrap"><table><thead><tr><th>Stat</th><th>Assigned</th><th>Unenhanced</th><th>Enhanced</th></tr></thead><tbody>
+      ${stats.map((key) => `<tr><td>${esc(statNames[key])}</td><td>${esc(before[key] || '—')}</td><td>${after[key] === '' ? '—' : after[key]}</td><td>${after[key] === '' ? '—' : after[key]}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted micro">Race and Class change Unenhanced Stats. Enhanced equals Unenhanced until equipment adds bonuses.${d.dayNight ? ` Day/night values: ${stats.filter((k) => d.statText[k].includes('/')).map((k) => `${statNames[k]} ${d.statText[k]}`).join(', ')} (first is daytime, second is night time).` : ''}</p>
+    <h3>Skills & Spells</h3>
+    ${changed.length ? `<ul class="rc-skill-list">${changed.map((x) => `<li><strong>${esc(x.label || x.name)}</strong> Rank ${x.rank} <span class="muted micro">(${esc(x.source)})${x.wasted ? ` · ${x.wasted} over the Rank ${SELECTION_RANK_CAP} cap wasted` : ''}</span></li>`).join('')}</ul>` : '<p class="muted">No Skill changes yet.</p>'}
+    <p class="muted micro">Size ${esc(d.size || '—')} · Move ${d.move} ft${d.dr.total ? ` · DR ${d.dr.parts.map((x) => `+${x.value} (${x.from})`).join(' ')} = ${d.dr.total}` : ''}</p>
+  </section>`;
+}
+
+function raceClassStep() {
+  const raceOptions = eligibleRaces(state);
+  const classOptions = eligibleClasses(state);
+  const chosenRace = findRace(state.race);
+  const chosenClass = findClass(state.className);
+  const raceIssues = chosenRace ? raceClassRequirementIssues(state, chosenRace) : [];
+  const classIssues = chosenClass ? raceClassRequirementIssues(state, chosenClass) : [];
+  const hiddenRaces = races.length - raceOptions.length;
+  const hiddenClasses = classes.length - classOptions.length;
+  return `
+    <p class="eyebrow">STEP 9 · RACE & CLASS</p>
+    <h1>Choose a Race and Class</h1>
+    <p class="intro">Crawlers choose a Race and Class on reaching the Third Floor, but you can add them here at any time. Only the Races and Classes whose prerequisites this crawler meets are listed. Leaving Race empty keeps the Race you entered the dungeon with.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Crawler record</h2>${sourceRef('Prerequisites, pp. 128-158')}</div>
+      <p class="muted micro">Skill Ranks come from your Backgrounds and Combat choices. Record anything else your crawler has earned so limited options can unlock.</p>
+      <div class="fields">
+        <label class="field">Popularity<input data-bind="popularity" data-rerender="true" value="${esc(state.popularity)}" inputmode="numeric" maxlength="4" placeholder="0"></label>
+        <label class="field">Achievements <span class="optional">one per line</span><textarea data-bind="achievements" data-rerender="true" rows="3" maxlength="600" placeholder="Boom!">${esc(state.achievements)}</textarea></label>
+      </div>
+      <label class="check"><input type="checkbox" data-bind="clubs.desperado" ${state.clubs.desperado ? 'checked' : ''}> <span>Has access to the Desperado Club</span></label>
+      <label class="check"><input type="checkbox" data-bind="clubs.vanquisher" ${state.clubs.vanquisher ? 'checked' : ''}> <span>Has access to Club Vanquisher</span></label>
+      <label class="check"><input type="checkbox" data-bind="female" ${state.female ? 'checked' : ''}> <span>Female crawler <small class="muted">(for female-only options; these limits are optional, p. 128)</small></span></label>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Race</h2>${sourceRef('pp. 128-141')}</div>
+      <label class="field rc-floor">Floor the Race & Class were chosen on<input data-bind="raceClassFloor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.raceClassFloor)}"><small>Skill-ups logged on earlier floors count before Race/Class bonuses (Level & Skills step).</small></label>
+      ${chosenRace && raceIssues.length ? ineligibleSelection(chosenRace, 'race', raceIssues) : ''}
+      ${chosenRace && !raceIssues.length ? `<p>Selected: <strong>${esc(chosenRace.name)}</strong> <button type="button" class="secondary" data-clear="race">Keep original Race instead</button></p>` : ''}
+      ${chosenRace ? choiceControls('race', chosenRace, state.raceChoices) : ''}
+      <div class="rc-grid">${raceOptions.map((x) => raceClassCard(x, 'race', x.name === state.race)).join('')}</div>
+      ${hiddenRaces ? `<p class="muted micro">${hiddenRaces} limited Race${hiddenRaces === 1 ? ' is' : 's are'} hidden because this crawler doesn’t meet the prerequisites yet.</p>` : ''}
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Class</h2>${sourceRef('pp. 142-158')}</div>
+      <p class="muted micro">Earth Classes need an Earth-based Race. Classes are filtered against ${esc(state.race ? `the ${state.race} Race` : 'your original Race')}.</p>
+      ${chosenClass && classIssues.length ? ineligibleSelection(chosenClass, 'class', classIssues) : ''}
+      ${chosenClass && !classIssues.length ? `<p>Selected: <strong>${esc(chosenClass.name)}</strong> <button type="button" class="secondary" data-clear="class">Remove Class</button></p>` : ''}
+      ${chosenClass ? choiceControls('class', chosenClass, state.classChoices) : ''}
+      <div class="rc-grid">${classOptions.map((x) => raceClassCard(x, 'class', x.name === state.className)).join('')}</div>
+      ${hiddenClasses ? `<p class="muted micro">${hiddenClasses} Class${hiddenClasses === 1 ? ' is' : 'es are'} hidden because this crawler doesn’t meet the prerequisites yet.</p>` : ''}
+    </section>
+    ${raceClassResults()}
+    <div class="callout">Stat, Skill, Spell, DR, Size and Move bonuses are applied automatically. Skill and Spell bonuses add Ranks immediately, up to Rank ${SELECTION_RANK_CAP} during selection. Situational benefits are listed on the sheet for reference.</div>
+    ${actions('attacks', 'advancement')}
+  `;
+}
+
+function skillOptions(selected) {
+  const owned = allSkills(state).map((x) => x.name).sort((a, b) => a.localeCompare(b));
+  const ownedKeys = new Set(owned.map((x) => x.toLowerCase()));
+  const learn = (kind) => skillCatalog.filter((x) => x.kind === kind && !x.custom && !ownedKeys.has(x.name.toLowerCase()));
+  const option = (name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`;
+  return `<option value="">Choose…</option>
+    <optgroup label="Your Skills & Spells">${owned.map(option).join('')}</optgroup>
+    <optgroup label="Learn a new Skill">${learn('skill').map((x) => option(x.name)).join('')}</optgroup>
+    <optgroup label="Learn a new Spell">${learn('spell').map((x) => option(x.name)).join('')}</optgroup>`;
+}
+
+function advancementStep() {
+  const d = derived(state);
+  const report = skillUpReport(state);
+  const draftPoints = levelPoints(levelDraft);
+  const draftTotal = Object.values(draftPoints).reduce((a, b) => a + b, 0);
+  const levels = state.levelUps || [];
+  const ups = state.skillUps || [];
+  return `
+    <p class="eyebrow">STEP 10 · LEVEL & SKILLS</p>
+    <h1>Level up and track Skill Ranks</h1>
+    <p class="intro">Each level adds ${LEVEL_STAT_POINTS} Stat points to spend on any Stats. Log Skill and Spell Ranks as your crawler gains them during play, with the floor it happened on.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Level ${d.level} · Floor ${d.floor}</h2>${sourceRef('Stat points: user rule')}</div>
+      <label class="field adv-floor">Current Floor<input data-bind="floor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.floor)}"></label>
+      ${levels.length ? `<div class="table-wrap"><table><thead><tr><th>Level</th><th>Floor</th><th>Stat points</th><th></th></tr></thead><tbody>
+        ${levels.map((entry, i) => `<tr><td>${i + 2}</td><td>${esc(entry.floor)}</td><td>${stats.filter((k) => levelPoints(entry)[k]).map((k) => `+${levelPoints(entry)[k]} ${k}`).join(', ')}</td>
+          <td>${i === levels.length - 1 ? '<button type="button" class="secondary" data-action="undo-level">Undo</button>' : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="muted">No levels gained yet. Starting crawlers are Level 1.</p>'}
+      <h3>Gain Level ${d.level + 1}</h3>
+      <div class="adv-grid">
+        ${stats.map((key) => `<label class="field">${esc(statNames[key])}<input type="number" min="0" max="${LEVEL_STAT_POINTS}" data-level-draft="${key}" value="${draftPoints[key] || ''}" placeholder="0"></label>`).join('')}
+        <label class="field">Floor<input inputmode="numeric" maxlength="3" data-level-draft="floor" value="${esc(levelDraft.floor)}" placeholder="${d.floor}"></label>
+      </div>
+      <div class="action-right"><span class="${draftTotal === LEVEL_STAT_POINTS ? 'success' : 'muted'}">${draftTotal}/${LEVEL_STAT_POINTS} points</span>
+        <button type="button" class="primary" data-action="add-level">Add level</button></div>
+      ${state.race === 'Human' ? `<p class="muted micro">Human: each level gained on or after Floor ${esc(state.raceClassFloor)} adds 1 AI Favor (now ${d.aiFavor}).</p>` : ''}
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Skill & Spell log</h2>${sourceRef('Rank limits p. 128')}</div>
+      <p class="muted micro">Rank ${RANK_CAP} is the limit, or ${EXTENDED_RANK_CAP} where your Race or Class allows it; extra Ranks are wasted. Ranks above ${RANK_CAP} come online on Floor ${HIGH_RANK_FLOOR}. ${state.race || state.className ? `Entries before Floor ${esc(state.raceClassFloor)} happened before your Race/Class bonuses.` : ''}</p>
+      <div class="adv-grid adv-skill-form">
+        <label class="field adv-wide">Skill or Spell<select data-skill-draft="skill">${skillOptions(skillUpDraft.skill)}</select></label>
+        <label class="field">Ranks<input type="number" min="1" data-skill-draft="ranks" value="${esc(skillUpDraft.ranks)}"></label>
+        <label class="field">Floor<input inputmode="numeric" maxlength="3" data-skill-draft="floor" value="${esc(skillUpDraft.floor)}" placeholder="${d.floor}"></label>
+        <label class="field">How<select data-skill-draft="how">${SKILL_UP_METHODS.map((m) => `<option ${m === skillUpDraft.how ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+        <label class="field adv-wide">Note <span class="optional">optional</span><input data-skill-draft="note" maxlength="120" value="${esc(skillUpDraft.note)}"></label>
+      </div>
+      <div class="action-right">${skillUpDraft.skill ? `<span class="muted micro">Limit for ${esc(skillUpDraft.skill)}: Rank ${rankLimit(state, skillUpDraft.skill)}</span>` : ''}
+        <button type="button" class="primary" data-action="add-skill-up">Log skill-up</button></div>
+      ${ups.length ? `<div class="table-wrap"><table class="adv-log"><thead><tr><th>Skill or Spell</th><th>Ranks</th><th>Floor</th><th>How</th><th>Note</th><th>Result</th><th></th></tr></thead><tbody>
+        ${ups.map((entry, i) => {
+          const r = report[i];
+          const result = r ? `R${r.before} → R${r.after}${r.wasted ? ` <span class="error">(${r.wasted} wasted, limit ${r.cap})</span>` : ''}` : '—';
+          return `<tr>
+            <td><select data-bind="skillUps.${i}.skill" data-rerender="true">${skillOptions(entry.skill)}</select></td>
+            <td><input type="number" min="1" data-bind="skillUps.${i}.ranks" data-rerender="true" value="${esc(entry.ranks)}"></td>
+            <td><input inputmode="numeric" maxlength="3" data-bind="skillUps.${i}.floor" data-rerender="true" value="${esc(entry.floor)}"></td>
+            <td><select data-bind="skillUps.${i}.how">${SKILL_UP_METHODS.map((m) => `<option ${m === entry.how ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></td>
+            <td><input data-bind="skillUps.${i}.note" maxlength="120" value="${esc(entry.note)}"></td>
+            <td class="nowrap">${result}</td>
+            <td><button type="button" class="secondary" data-delete-skill-up="${i}" aria-label="Delete skill-up">Delete</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody></table></div>` : '<p class="muted">No skill-ups logged yet.</p>'}
+    </section>
+    ${actions('raceclass', 'review')}
   `;
 }
 
@@ -612,6 +795,8 @@ function renderMain() {
     gear: gearStep,
     hotlist: hotlistStep,
     attacks: attacksStep,
+    raceclass: raceClassStep,
+    advancement: advancementStep,
     review: reviewStep,
   };
   main.innerHTML = renderers[activeStep]();
@@ -678,6 +863,72 @@ main.addEventListener('click', async (event) => {
       return;
     }
     return navigate('story');
+  }
+
+  const raceChoice = event.target.closest('[data-race]');
+  if (raceChoice) {
+    if (state.race !== raceChoice.dataset.race) state.raceChoices = {};
+    state.race = raceChoice.dataset.race;
+    const classIssues = state.className ? raceClassRequirementIssues(state, findClass(state.className)) : [];
+    if (classIssues.length) {
+      setNotice(`${state.className} isn’t available to ${state.race}, so the Class was removed.`);
+      state.className = '';
+      state.classChoices = {};
+    }
+    saveState();
+    return render();
+  }
+
+  const classChoice = event.target.closest('[data-class]');
+  if (classChoice) {
+    if (state.className !== classChoice.dataset.class) state.classChoices = {};
+    state.className = classChoice.dataset.class;
+    saveState();
+    return render();
+  }
+
+  const action = event.target.closest('[data-action="add-level"], [data-action="undo-level"], [data-action="add-skill-up"]');
+  if (action?.dataset.action === 'add-level') {
+    const points = levelPoints(levelDraft);
+    const total = Object.values(points).reduce((a, b) => a + b, 0);
+    if (total !== LEVEL_STAT_POINTS) return setNotice(`Assign exactly ${LEVEL_STAT_POINTS} Stat points (${total} assigned).`);
+    state.levelUps = [...(state.levelUps || []), { floor: levelDraft.floor || state.floor, stats: points }];
+    levelDraft = { floor: '', stats: {} };
+    saveState();
+    return render();
+  }
+  if (action?.dataset.action === 'undo-level') {
+    state.levelUps = (state.levelUps || []).slice(0, -1);
+    saveState();
+    return render();
+  }
+  if (action?.dataset.action === 'add-skill-up') {
+    if (!skillUpDraft.skill) return setNotice('Choose a Skill or Spell to log.');
+    if (!(Number(skillUpDraft.ranks) >= 1)) return setNotice('Ranks gained must be 1 or more.');
+    state.skillUps = [...(state.skillUps || []), { ...skillUpDraft, floor: skillUpDraft.floor || state.floor }];
+    skillUpDraft = { ...skillUpDraft, skill: '', ranks: '1', note: '' };
+    saveState();
+    return render();
+  }
+
+  const deleteSkillUp = event.target.closest('[data-delete-skill-up]');
+  if (deleteSkillUp) {
+    state.skillUps = state.skillUps.filter((_, i) => i !== Number(deleteSkillUp.dataset.deleteSkillUp));
+    saveState();
+    return render();
+  }
+
+  const clearChoice = event.target.closest('[data-clear]');
+  if (clearChoice) {
+    if (clearChoice.dataset.clear === 'race') {
+      state.race = '';
+      state.raceChoices = {};
+    } else {
+      state.className = '';
+      state.classChoices = {};
+    }
+    saveState();
+    return render();
   }
 
   const origin = event.target.closest('[data-origin]');
@@ -835,6 +1086,28 @@ main.addEventListener('click', async (event) => {
 });
 
 main.addEventListener('change', (event) => {
+  const draft = event.target.closest('[data-level-draft], [data-skill-draft]');
+  if (draft) {
+    if (draft.dataset.levelDraft === 'floor') levelDraft.floor = draft.value;
+    else if (draft.dataset.levelDraft) levelDraft.stats[draft.dataset.levelDraft] = draft.value;
+    else skillUpDraft[draft.dataset.skillDraft] = draft.value;
+    return renderMain();
+  }
+  const choiceTarget = event.target.closest('[data-pick], [data-split]');
+  if (choiceTarget) {
+    const [kind, key, slot] = (choiceTarget.dataset.pick || choiceTarget.dataset.split).split('|');
+    const choices = kind === 'race' ? state.raceChoices : state.classChoices;
+    if (choiceTarget.dataset.pick) {
+      const picks = Array.isArray(choices[key]) ? [...choices[key]] : [];
+      picks[Number(slot)] = choiceTarget.value;
+      choices[key] = picks;
+    } else {
+      choices[key] = { ...(choices[key] || {}), [slot]: choiceTarget.value };
+    }
+    saveState();
+    return render();
+  }
+
   const target = event.target;
   if (target.matches('[data-bind]')) {
     const value = target.type === 'checkbox' ? target.checked : target.value;

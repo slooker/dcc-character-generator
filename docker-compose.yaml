@@ -6,4 +6,12 @@ services:
     container_name: dcc-character-generator
     ports:
       - "${PORT:-4173}:80"
+    environment:
+      # Any SQLAlchemy URL; the default is SQLite in the crawler-data volume.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/app.db}
+    volumes:
+      - crawler-data:/data
     restart: unless-stopped
+
+volumes:
+  crawler-data:

@@ -1,1 +1,5 @@
+-r server/requirements.txt
+httpx==0.28.1
 pypdf>=5,<6
+mini-racer>=0.12,<1
+pymupdf>=1.24

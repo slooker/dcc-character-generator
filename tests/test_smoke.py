@@ -25,23 +25,25 @@ def sha256(path: Path) -> str:
 
 class DockerPackagingTests(unittest.TestCase):
     def test_compose_publishes_default_port_and_builds_local_image(self) -> None:
-        compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("crawler-builder:", compose)
         self.assertIn("dockerfile: Dockerfile", compose)
         self.assertIn('${PORT:-4173}:80', compose)
         self.assertIn("restart: unless-stopped", compose)
 
-    def test_docker_image_serves_dist_with_nginx(self) -> None:
+    def test_docker_image_runs_fastapi_with_migrations_and_volume(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        nginx = (ROOT / "nginx.conf").read_text(encoding="utf-8")
-        self.assertIn("FROM nginx:alpine", dockerfile)
-        self.assertIn("COPY dist/ /usr/share/nginx/html/", dockerfile)
+        compose = (ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("FROM python:3.12-slim", dockerfile)
+        self.assertIn("COPY dist/ dist/", dockerfile)
+        self.assertIn("COPY server/ server/", dockerfile)
+        self.assertIn("uvicorn", dockerfile)
         self.assertIn("EXPOSE 80", dockerfile)
         self.assertIn("HEALTHCHECK", dockerfile)
-        self.assertIn("root /usr/share/nginx/html;", nginx)
-        self.assertIn("try_files $uri $uri/ /index.html;", nginx)
-        self.assertIn("try_files $uri =404;", nginx)
-        self.assertIn('Cache-Control "no-store"', nginx)
+        self.assertIn("/api/health", dockerfile)
+        self.assertIn("crawler-data:/data", compose)
+        self.assertIn("DATABASE_URL", compose)
+        self.assertFalse((ROOT / "nginx.conf").exists())
 
     def test_python_web_server_was_removed(self) -> None:
         self.assertFalse((ROOT / "serve.py").exists())
@@ -49,9 +51,8 @@ class DockerPackagingTests(unittest.TestCase):
     def test_dockerignore_keeps_rule_sources_out_of_runtime_image(self) -> None:
         ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         for name in (
-            "character-generation-rules.pdf",
-            "skills-and-spells.pdf",
-            "fillable-character-sheet.pdf",
+            "source-files/",
+            "source-text/",
             "tests/",
             "tmp/",
         ):
@@ -149,10 +150,14 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn("statValidationErrors(state)", app)
 
 
-    def test_pdf_defaults_level_and_floor_to_one(self) -> None:
+    def test_pdf_writes_level_and_floor(self) -> None:
+        # New crawlers start at Level 1 / Floor 1 (initialState); tests/test_advancement.py covers changes.
         pdf_js = (DIST / "pdf.js").read_text(encoding="utf-8")
-        self.assertIn("setField(form, 'level', 1", pdf_js)
-        self.assertIn("setField(form, 'Floor', 1", pdf_js)
+        rules_js = (DIST / "rules.js").read_text(encoding="utf-8")
+        self.assertIn("setField(form, 'level', d.level", pdf_js)
+        self.assertIn("setField(form, 'Floor', d.floor", pdf_js)
+        self.assertIn("floor: 1,", rules_js)
+        self.assertIn("return 1 + (state.levelUps || []).length;", rules_js)
         self.assertNotIn("clearField(form, 'level')", pdf_js)
         self.assertNotIn("clearField(form, 'Floor')", pdf_js)
 

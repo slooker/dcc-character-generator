@@ -1,3 +1,9 @@
 tmp
 .openai
 *.pdf
+source-text/
+.venv/
+__pycache__/
+*.db
+*.db-wal
+*.db-shm

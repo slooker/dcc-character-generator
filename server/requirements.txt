@@ -1,0 +1,7 @@
+# Runtime dependencies for the FastAPI server (installed in the Docker image).
+# To use Postgres or MySQL instead of SQLite, add its driver here
+# (e.g. psycopg[binary] or PyMySQL) and set DATABASE_URL.
+fastapi==0.115.6
+uvicorn==0.32.1
+sqlalchemy==2.0.36
+alembic==1.14.0
