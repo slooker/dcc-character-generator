@@ -109,6 +109,45 @@ DATABASE_URL=sqlite:///./tmp/dev.db alembic -c server/alembic.ini revision --aut
 
 To use Postgres or MySQL instead, add its driver to `server/requirements.txt` (for example `psycopg[binary]` or `PyMySQL`) and set `DATABASE_URL` (for example `postgresql+psycopg://user:pass@host/db`). Compose passes `DATABASE_URL` through from your environment.
 
+### Accounts
+
+Crawlers can be saved to an email/password account, up to 5 per account (enforced by the server). The builder still works signed out; the working draft always lives in the browser's localStorage, and **Save** copies it to the account.
+
+- Passwords are hashed with Argon2id. Sessions last 30 days in an HttpOnly, SameSite=Lax cookie; the database stores only a hash of the session token.
+- The cookie is marked Secure when the request arrives over HTTPS. Behind an HTTPS reverse proxy that doesn't forward the scheme, set `COOKIE_SECURE=1`.
+- Mutating `/api` requests must send an `X-Requested-With` header (CSRF protection).
+- Behind Cloudflare Tunnel and Caddy, the visitor's real address comes from `CF-Connecting-IP` (or Caddy's `X-Forwarded-For`) and HTTPS from `X-Forwarded-Proto`. These headers are believed only from `TRUSTED_PROXIES` (default: private and loopback ranges), so outside visitors can't fake them.
+- After 10 failed sign-ins for an email or client address within 15 minutes, further attempts get a 429 until the window passes. The counter is in memory, so it resets when the container restarts.
+- New accounts must confirm their email with a 6-digit code before they can save crawlers or edit the profile. Codes expire after 15 minutes or 5 wrong tries, and a new one can be requested once a minute. An address nobody has verified (and with no saved crawlers) can be registered again, so a mistyped or squatted sign-up can't lock the owner out.
+- **Edit profile** (the name button in the header) changes the display name and email. Changing the email needs the current password and a code sent to the new address; the old address gets a notice once the change goes through.
+- API docs: `http://localhost:4173/api/docs`.
+
+#### Email
+
+Settings go in a `.env` file next to `docker-compose.yaml` (it's gitignored). Run `docker compose up -d` after changing it.
+
+**Bird** (used first when set):
+
+```sh
+BIRD_API_KEY=bk_...
+MAIL_FROM="Crawler Intake <noreply@mail.example.com>"   # optional
+```
+
+Without `MAIL_FROM`, mail comes from Bird's shared onboarding sender (`onboarding@messagebird.dev`). That sender needs no setup, but it only delivers to verified members of your Bird workspace. To email anyone else, verify a sending domain in Bird (Email > Domains), then set `MAIL_FROM` to an address on it.
+
+**SMTP**:
+
+```sh
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587               # 465 with SMTP_SECURITY=ssl
+SMTP_SECURITY=starttls      # starttls | ssl | none
+SMTP_USERNAME=you@example.com
+SMTP_PASSWORD=app-password
+MAIL_FROM="Crawler Intake <you@example.com>"
+```
+
+With neither `BIRD_API_KEY` nor `SMTP_HOST`, nothing is sent: each email, code included, is written to the container log instead (`docker compose logs crawler-builder`).
+
 After changing files under `dist/`, rebuild the image:
 
 ```powershell

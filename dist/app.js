@@ -10,6 +10,10 @@ import {
 import { races, classes, skillCatalog } from './races-classes.js';
 import { attacks, damageEffects } from './details.js';
 import { downloadCharacterSheet } from './pdf.js';
+import {
+  account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
+  deleteCharacter, setLink, saveStatus, verified, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
+} from './account.js';
 
 const STORAGE_KEY = 'dcc-crawler-builder-v1';
 const steps = [
@@ -42,6 +46,7 @@ const main = $('#main');
 const nav = $('#steps');
 const summary = $('#summary');
 const notice = $('#notice');
+const accountBarEl = $('#account-bar');
 
 function esc(value = '') {
   return String(value)
@@ -63,6 +68,11 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  renderAccountBar();
+}
+
+function renderAccountBar() {
+  accountBarEl.innerHTML = accountBar(state);
 }
 
 function setNotice(message, timeout = 2600) {
@@ -84,6 +94,13 @@ function setPath(path, value) {
 }
 
 function navigate(step) {
+  if (step === 'account' || step === 'profile') {
+    activeStep = step;
+    render();
+    main.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
   const targetIndex = steps.findIndex(([id]) => id === step);
   if (targetIndex === -1) return;
   const currentIndex = steps.findIndex(([id]) => id === activeStep);
@@ -798,11 +815,14 @@ function renderMain() {
     raceclass: raceClassStep,
     advancement: advancementStep,
     review: reviewStep,
+    account: () => accountView(state),
+    profile: profileView,
   };
   main.innerHTML = renderers[activeStep]();
 }
 
 function render() {
+  renderAccountBar();
   renderNav();
   renderMain();
   renderSummary();
@@ -830,6 +850,7 @@ nav.addEventListener('click', (event) => {
 main.addEventListener('click', async (event) => {
   const navButton = event.target.closest('[data-nav]');
   if (navButton) return navigate(navButton.dataset.nav);
+  if (await accountClick(event)) return;
 
   const continueBackgrounds = event.target.closest('[data-action="continue-backgrounds"]');
   if (continueBackgrounds) {
@@ -1043,28 +1064,8 @@ main.addEventListener('click', async (event) => {
 
   const newCrawler = event.target.closest('[data-action="new-crawler"]');
   if (newCrawler) {
-    if (confirm('Start over? This clears the current crawler and assigns a new crawler number.')) {
-      // Rebuilding the form synchronously while the click/confirm interaction is
-      // still unwinding can leave newly-created text inputs unable to receive
-      // keyboard focus in some browsers (notably Firefox). Finish the current
-      // event first, then create and focus the fresh crawler form.
-      document.activeElement?.blur?.();
-      draggedHotlistSlot = null;
-      touchHotlistDrag = null;
-      exporting = false;
-      window.setTimeout(() => {
-        localStorage.removeItem(STORAGE_KEY);
-        state = initialState();
-        activeStep = 'identity';
-        activeBackgroundStage = 0;
-        saveState();
-        render();
-        requestAnimationFrame(() => {
-          main.querySelector('[data-bind="name"]')?.focus();
-        });
-        setNotice('New crawler file opened.');
-      }, 0);
-    }
+    if (!canStartNewCrawler()) return openEraseDialog();
+    if (confirm('Start over? This clears the current crawler and assigns a new crawler number.')) startNewCrawler();
     return;
   }
 
@@ -1083,6 +1084,159 @@ main.addEventListener('click', async (event) => {
       renderMain();
     }
   }
+});
+
+function startNewCrawler() {
+  // Rebuilding the form synchronously while the click/confirm interaction is
+  // still unwinding can leave newly-created text inputs unable to receive
+  // keyboard focus in some browsers (notably Firefox). Finish the current
+  // event first, then create and focus the fresh crawler form.
+  document.activeElement?.blur?.();
+  draggedHotlistSlot = null;
+  touchHotlistDrag = null;
+  exporting = false;
+  window.setTimeout(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setLink(null);
+    state = initialState();
+    activeStep = 'identity';
+    activeBackgroundStage = 0;
+    saveState();
+    render();
+    requestAnimationFrame(() => {
+      main.querySelector('[data-bind="name"]')?.focus();
+    });
+    setNotice('New crawler file opened.');
+  }, 0);
+}
+
+// Without a verified account the draft can't be saved, so starting over
+// would destroy it: offer to sign in and verify first, or erase it knowingly.
+function openEraseDialog() {
+  const name = state.name || 'This crawler';
+  const signedIn = Boolean(account.user);
+  eraseDialog.innerHTML = `
+    <form method="dialog">
+      <p class="eyebrow">START A NEW CRAWLER</p>
+      <h2 id="erase-title">Keep ${esc(name)} first?</h2>
+      <p>You can only keep one crawler until you ${signedIn ? 'verify your email' : 'sign in and verify your email'}. After that, you can save up to ${account.limit} crawlers to your account.</p>
+      <div class="erase-warning" role="alert"><strong>Starting over erases ${esc(name)}.</strong> It isn't saved anywhere else, so it can't be recovered.</div>
+      <div class="erase-actions">
+        <button class="primary" value="keep">${signedIn ? 'Verify email to keep it' : 'Sign in to keep it'}</button>
+        <button class="secondary danger-button" value="erase">Erase it and start over</button>
+        <button class="secondary" value="cancel">Cancel</button>
+      </div>
+    </form>`;
+  eraseDialog.returnValue = '';
+  eraseDialog.showModal();
+  eraseDialog.querySelector('[value="keep"]').focus();
+}
+
+const eraseDialog = document.createElement('dialog');
+eraseDialog.className = 'erase-dialog';
+eraseDialog.setAttribute('aria-labelledby', 'erase-title');
+document.body.append(eraseDialog);
+eraseDialog.addEventListener('close', () => {
+  if (eraseDialog.returnValue === 'keep') {
+    if (!account.user) account.mode = 'login';
+    navigate('account');
+  } else if (eraseDialog.returnValue === 'erase') {
+    startNewCrawler();
+  }
+});
+
+async function saveToAccount() {
+  if (!verified()) return navigate('account');
+  try {
+    const saved = await saveCharacter(state);
+    setNotice(`Saved ${saved.name} to your account.`);
+  } catch (error) {
+    setNotice(error.message, 6000);
+    if (error.status === 401 || error.status === 403) {
+      await refreshAccount();
+      return navigate('account');
+    }
+  }
+  render();
+}
+
+// Clicks on account controls in the header or the My Crawlers page; true if handled.
+async function accountClick(event) {
+  const target = event.target.closest('[data-action="account"], [data-action="profile"], [data-action="save-crawler"], [data-action="sign-out"], [data-account-mode], [data-account-action], [data-open-character], [data-delete-character]');
+  if (!target) return false;
+  if (target.dataset.action === 'account' || target.dataset.action === 'profile') {
+    navigate(target.dataset.action);
+  } else if (isAccountAction(target.dataset.accountAction)) {
+    const message = await accountAction(target.dataset.accountAction);
+    if (message) setNotice(message, 5000);
+    render();
+  } else if (target.dataset.action === 'save-crawler') {
+    target.disabled = true;
+    await saveToAccount();
+  } else if (target.dataset.action === 'sign-out') {
+    await signOut();
+    setNotice('Signed out. Your draft stays in this browser.');
+    if (activeStep === 'profile') activeStep = 'account';
+    render();
+  } else if (target.dataset.accountMode) {
+    account.mode = target.dataset.accountMode;
+    account.error = '';
+    renderMain();
+    main.querySelector('input[name="email"]')?.focus();
+  } else if (target.dataset.openCharacter) {
+    const id = Number(target.dataset.openCharacter);
+    const hasDraft = state.name || state.kind;
+    if (hasDraft && saveStatus(state) !== 'saved' && !confirm('Open this crawler? The unsaved changes to the crawler you have open now will be lost.')) return true;
+    try {
+      state = normalizeState(await openCharacter(id));
+      setLink(id, state);
+      activeBackgroundStage = 0;
+      saveState();
+      setNotice(`Opened ${state.name || 'crawler'}.`);
+      navigate('identity');
+    } catch (error) {
+      setNotice(error.message, 6000);
+    }
+  } else if (target.dataset.deleteCharacter) {
+    const id = Number(target.dataset.deleteCharacter);
+    const name = account.characters.find((x) => x.id === id)?.name || 'this crawler';
+    if (!confirm(`Delete ${name} from your account? This can't be undone.`)) return true;
+    try {
+      await deleteCharacter(id);
+      setNotice(`Deleted ${name}.`);
+    } catch (error) {
+      setNotice(error.message, 6000);
+    }
+    render();
+  }
+  return true;
+}
+
+accountBarEl.addEventListener('click', accountClick);
+
+main.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-account-form]');
+  if (!form || !isAccountForm(form.dataset.accountForm)) return;
+  event.preventDefault();
+  const kind = form.dataset.accountForm;
+  const data = Object.fromEntries([...new FormData(form)].map(([key, value]) => [key, String(value)]));
+  account.busy = true;
+  renderMain();
+  const message = await submitAccountForm(kind, data);
+  if (message) {
+    setNotice(message, 5000);
+    render();
+    main.querySelector('input[name="code"]')?.focus();
+    return;
+  }
+  render();
+  // Keep what was typed (except passwords) and focus the first field to fix.
+  const again = main.querySelector(`[data-account-form="${kind}"]`);
+  for (const [key, value] of Object.entries(data)) {
+    const input = again?.querySelector(`[name="${key}"]`);
+    if (input && input.type !== 'password') input.value = value;
+  }
+  again?.querySelector('input[name="code"], input[type="password"]')?.focus();
 });
 
 main.addEventListener('change', (event) => {
@@ -1306,3 +1460,8 @@ main.addEventListener('pointercancel', (event) => {
 });
 
 render();
+// Only redraw what depends on the account, so a field being typed in keeps focus.
+refreshAccount().then(() => {
+  renderAccountBar();
+  if (activeStep === 'account') renderMain();
+});

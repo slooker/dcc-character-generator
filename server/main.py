@@ -12,14 +12,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from server import auth, characters
 from server.database import get_session, upgrade
 
 DIST = Path(os.environ.get('DIST_DIR', Path(__file__).resolve().parent.parent / 'dist')).resolve()
 ASSET_SUFFIXES = {'.js', '.css', '.pdf'}
+SAFE_METHODS = {'GET', 'HEAD', 'OPTIONS'}
 MEDIA_TYPES = {'.js': 'text/javascript', '.css': 'text/css', '.pdf': 'application/pdf', '.html': 'text/html'}
 
 
@@ -38,6 +40,19 @@ async def no_store(request: Request, call_next):
     response = await call_next(request)
     response.headers['Cache-Control'] = 'no-store'
     return response
+
+
+@app.middleware('http')
+async def require_api_header(request: Request, call_next):
+    # CSRF guard: a cross-site form can't set custom headers, and fetch() can't
+    # without a CORS preflight this app never approves.
+    if request.url.path.startswith('/api/') and request.method not in SAFE_METHODS and not request.headers.get('x-requested-with'):
+        return JSONResponse({'detail': 'Missing X-Requested-With header.'}, status_code=403)
+    return await call_next(request)
+
+
+app.include_router(auth.router)
+app.include_router(characters.router)
 
 
 @app.get('/api/health')

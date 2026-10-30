@@ -9,6 +9,20 @@ services:
     environment:
       # Any SQLAlchemy URL; the default is SQLite in the crawler-data volume.
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/app.db}
+      # auto = Secure cookie only over HTTPS; set 1 behind an HTTPS proxy.
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      # Proxies whose forwarded headers (CF-Connecting-IP, X-Forwarded-For,
+      # X-Forwarded-Proto) are believed. Default: private and loopback ranges.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7}
+      # Email for verification codes: Bird (BIRD_API_KEY) if set, else SMTP.
+      # With neither, emails (and their codes) go to the container log.
+      BIRD_API_KEY: ${BIRD_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
     volumes:
       - crawler-data:/data
     restart: unless-stopped

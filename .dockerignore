@@ -9,3 +9,4 @@ tmp/
 qa-responsive.html
 __pycache__/
 *.db
+.env
