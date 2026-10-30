@@ -224,15 +224,18 @@ function googleButton(register) {
 
 const signOutButton = '<button type="button" class="secondary account-button" data-action="sign-out">Sign out</button>';
 
+const workshopButton = '<button type="button" class="secondary account-button" data-action="workshop">Custom Races & Classes</button>';
+
 export function accountBar(state) {
   if (!account.available || !account.ready) return '';
-  if (!account.user) return '<button type="button" class="secondary account-button" data-action="account">Sign in to save</button>';
-  if (!verified()) return `<button type="button" class="primary account-button" data-action="account">Verify email</button>${signOutButton}`;
+  if (!account.user) return `${workshopButton}<button type="button" class="secondary account-button" data-action="account">Sign in to save</button>`;
+  if (!verified()) return `${workshopButton}<button type="button" class="primary account-button" data-action="account">Verify email</button>${signOutButton}`;
   const status = saveStatus(state);
   const label = { saved: 'Saved', unsaved: 'Save changes', new: 'Save crawler' }[status];
   return `
     <button type="button" class="primary account-button" data-action="save-crawler" ${status === 'saved' ? 'disabled' : ''}>${label}</button>
     <button type="button" class="secondary account-button" data-action="account">My Crawlers <span>${slotText()}</span></button>
+    ${workshopButton}
     <button type="button" class="secondary account-button profile-button" data-action="profile" title="Edit profile">${esc(account.user.name || account.user.email)}</button>
     ${signOutButton}`;
 }

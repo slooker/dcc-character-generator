@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from server.database import get_session
 from server.mailer import MailError, send_email
+from server.moderation import inappropriate
 from server.models import AuthIdentity, Character, EmailCode, User, UserSession, utcnow
 from server.proxy import client_ip, request_scheme
 
@@ -132,6 +133,9 @@ def checked_name(name: str) -> str:
     name = ' '.join(name.split())
     if len(name) > NAME_MAX:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f'Names can be at most {NAME_MAX} characters.')
+    # Profile names are shown publicly as the author of shared builds.
+    if inappropriate(name):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, 'That name isn’t allowed. Choose something without slurs, sexual terms or strong profanity.')
     return name
 
 

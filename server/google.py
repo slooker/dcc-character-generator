@@ -35,7 +35,8 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from server.auth import checked_name, cookie_secure, normalize_email, start_session
+from server.auth import NAME_MAX, cookie_secure, normalize_email, start_session
+from server.moderation import inappropriate
 from server.database import get_session
 from server.models import AuthIdentity, EmailCode, User, UserSession, utcnow
 from server.proxy import request_scheme
@@ -124,7 +125,9 @@ def google_user(db: Session, claims: dict) -> User:
     email = normalize_email(claims['email'])
     user = db.scalar(select(User).where(User.email == email))
     if user is None:
-        user = User(email=email, name=checked_name(str(claims.get('name') or ''))[:80], email_verified_at=utcnow())
+        # Google's name is only a default: dropped if it's too long or not allowed.
+        name = ' '.join(str(claims.get('name') or '').split())
+        user = User(email=email, name=name if len(name) <= NAME_MAX and not inappropriate(name) else '', email_verified_at=utcnow())
         db.add(user)
         db.flush()
     elif user.email_verified_at is None:

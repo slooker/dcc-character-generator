@@ -7,7 +7,7 @@ so storing naive UTC everywhere keeps comparisons identical on every database.
 """
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.database import Base
@@ -85,3 +85,24 @@ class EmailCode(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class CustomBuild(Base):
+    """A custom Race or Class made with the Build System (dist/builds.js), kept
+    apart from any crawler. `data` is the build as the editor saves it; `public`
+    builds are listed for everyone. `name_key` is the lowercased name, unique
+    per author and kind, and among public builds of a kind."""
+    __tablename__ = 'custom_builds'
+    __table_args__ = (UniqueConstraint('user_id', 'kind', 'name_key'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # 'race' | 'class'
+    name: Mapped[str] = mapped_column(String(80))
+    name_key: Mapped[str] = mapped_column(String(80))
+    public: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship()

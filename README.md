@@ -124,6 +124,22 @@ Crawlers can be saved to an email/password account, up to 5 per account (enforce
 - **Edit profile** (the name button in the header) changes the display name and email. Changing the email needs the current password and a code sent to the new address; the old address gets a notice once the change goes through.
 - API docs: `http://localhost:4173/api/docs`.
 
+#### Custom Races and Classes
+
+**Custom Races & Classes** in the header opens the workshop. Custom Races and Classes are made with the Race & Class Point Build System (`dcc-classes.pdf` pp. 158-162) and kept apart from any crawler.
+
+- **Rules (`dist/builds.js`):**
+  - Point pools: 25 Race and 30 Class Build Points, kept separate.
+  - Benefits: the book's benefit menu, plus your own benefits with a tier agreed with the GM.
+  - Detriments: they add at most 5 Build Points.
+  - Limits: a Class can have at most 5 points of Passive Skills, and DR Buffs stop at +3.
+  - Earth builds: an Earth Race or Class gets a Silver Earth Box, and an Earth Class needs an Earth Race.
+  - Applied automatically: Stat, Skill and Spell, Rank 20, DR, Move, Step, Size and stat-cap effects work like a book Race or Class. Everything else goes in the sheet's notes.
+- **Saving and sharing:** a verified account can keep up to 20 builds, private or shared publicly. Shared builds can be browsed by anyone, signed in or not, and show the author's profile name. Two shared builds of the same kind can't have the same name.
+- **Using a build:** "Use for this crawler" copies the build onto the crawler. Later edits or deletes don't change crawlers that already use it, and the card offers to update to the new version. The rules are checked again when a crawler takes a build.
+- **Name rules:** names must be 2-40 characters of letters, numbers and simple punctuation. They can't reuse a book Race or Class name or contain links.
+- **Filter (`server/moderation.py`):** build names, all text in a build and profile names are screened for slurs, sexual terms and strong profanity. The filter sees through common disguises (`sh1t`, `f u c k`, `fuuuck`) but allows harmless words that contain blocked ones (Cockroach, Grape, Scunthorpe) and mild words like damn or bastard. The word lists are at the top of `server/moderation.py`.
+
 #### Sign in with Google
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), open **APIs & Services → OAuth consent screen** (Google Auth Platform) and set it up as **External**, with the `openid`, `email` and `profile` scopes.

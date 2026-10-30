@@ -8,6 +8,7 @@ import {
   skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
+import { buildEntry } from './builds.js';
 import { attacks, damageEffects } from './details.js';
 import { downloadCharacterSheet } from './pdf.js';
 import {
@@ -18,6 +19,7 @@ import {
   account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
   deleteCharacter, setLink, saveStatus, verified, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
 } from './account.js';
+import { workshop, loadWorkshop, workshopView, buildEditorView, workshopClick, workshopChange, workshopInput, snapshot } from './workshop.js';
 
 const STORAGE_KEY = 'dcc-crawler-builder-v1';
 const steps = [
@@ -99,9 +101,11 @@ function setPath(path, value) {
 }
 
 function navigate(step) {
-  if (step === 'account' || step === 'profile') {
+  if (step === 'account' || step === 'profile' || step === 'workshop' || step === 'build-edit') {
+    if (step === 'build-edit' && !workshop.draft) step = 'workshop';
     activeStep = step;
     render();
+    if (step === 'workshop') loadWorkshop().then(() => { if (activeStep === 'workshop') renderMain(); });
     main.focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: 'smooth' });
     return;
@@ -647,7 +651,7 @@ function raceClassCard(entry, kind, selected) {
   const types = entry.classTypes?.length ? ` · ${entry.classTypes.join(', ')}` : '';
   return `<article class="rc-card ${selected ? 'selected' : ''}">
     <div class="rc-head"><strong>${esc(entry.name)}</strong><span class="tag">${entry.earth ? 'Earth' : kind === 'race' ? 'Alien' : 'Any Race'}</span></div>
-    <p class="muted micro">${sourceRef(`p. ${entry.page}`)}${esc(types)}${entry.prerequisite ? ` · Limited: ${esc(entry.prerequisite)}` : ''}</p>
+    <p class="muted micro">${entry.custom ? `Custom ${kind === 'race' ? 'Race' : 'Class'}${entry.author ? ` by ${esc(entry.author)}` : ''}` : sourceRef(`p. ${entry.page}`)}${esc(types)}${entry.prerequisite ? ` · Limited: ${esc(entry.prerequisite)}` : ''}</p>
     <details><summary>${entry.benefits.length} benefits</summary><ul>${entry.benefits.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></details>
     <button type="button" class="${selected ? 'secondary' : 'primary'}" data-${kind}="${esc(entry.name)}" aria-pressed="${selected}">${selected ? 'Selected' : `Choose ${kind === 'race' ? 'Race' : 'Class'}`}</button>
   </article>`;
@@ -695,11 +699,16 @@ function raceClassResults() {
   </section>`;
 }
 
+function customLink(kind) {
+  const label = kind === 'race' ? 'Race' : 'Class';
+  return `<p class="custom-link"><button type="button" class="secondary" data-nav="workshop">Custom ${label}s</button> <span class="muted micro">Build your own ${label} with the Build System, or use one another crawler shared.</span></p>`;
+}
+
 function raceClassStep() {
   const raceOptions = eligibleRaces(state);
   const classOptions = eligibleClasses(state);
-  const chosenRace = findRace(state.race);
-  const chosenClass = findClass(state.className);
+  const chosenRace = findRace(state.race, state);
+  const chosenClass = findClass(state.className, state);
   const raceIssues = chosenRace ? raceClassRequirementIssues(state, chosenRace) : [];
   const classIssues = chosenClass ? raceClassRequirementIssues(state, chosenClass) : [];
   const hiddenRaces = races.length - raceOptions.length;
@@ -725,7 +734,8 @@ function raceClassStep() {
       ${chosenRace && raceIssues.length ? ineligibleSelection(chosenRace, 'race', raceIssues) : ''}
       ${chosenRace && !raceIssues.length ? `<p>Selected: <strong>${esc(chosenRace.name)}</strong> <button type="button" class="secondary" data-clear="race">Keep original Race instead</button></p>` : ''}
       ${chosenRace ? choiceControls('race', chosenRace, state.raceChoices) : ''}
-      <div class="rc-grid">${raceOptions.map((x) => raceClassCard(x, 'race', x.name === state.race)).join('')}</div>
+      <div class="rc-grid">${[...(chosenRace?.custom ? [chosenRace] : []), ...raceOptions].map((x) => raceClassCard(x, 'race', x.name === state.race)).join('')}</div>
+      ${customLink('race')}
       ${hiddenRaces ? `<p class="muted micro">${hiddenRaces} limited Race${hiddenRaces === 1 ? ' is' : 's are'} hidden because this crawler doesn’t meet the prerequisites yet.</p>` : ''}
     </section>
     <section class="panel">
@@ -734,7 +744,8 @@ function raceClassStep() {
       ${chosenClass && classIssues.length ? ineligibleSelection(chosenClass, 'class', classIssues) : ''}
       ${chosenClass && !classIssues.length ? `<p>Selected: <strong>${esc(chosenClass.name)}</strong> <button type="button" class="secondary" data-clear="class">Remove Class</button></p>` : ''}
       ${chosenClass ? choiceControls('class', chosenClass, state.classChoices) : ''}
-      <div class="rc-grid">${classOptions.map((x) => raceClassCard(x, 'class', x.name === state.className)).join('')}</div>
+      <div class="rc-grid">${[...(chosenClass?.custom ? [chosenClass] : []), ...classOptions].map((x) => raceClassCard(x, 'class', x.name === state.className)).join('')}</div>
+      ${customLink('class')}
       ${hiddenClasses ? `<p class="muted micro">${hiddenClasses} Class${hiddenClasses === 1 ? ' is' : 'es are'} hidden because this crawler doesn’t meet the prerequisites yet.</p>` : ''}
     </section>
     ${raceClassResults()}
@@ -960,6 +971,8 @@ function renderMain() {
     review: reviewStep,
     account: () => accountView(state),
     profile: profileView,
+    workshop: () => workshopView(state),
+    'build-edit': buildEditorView,
   };
   main.innerHTML = renderers[activeStep]();
 }
@@ -994,6 +1007,7 @@ main.addEventListener('click', async (event) => {
   const navButton = event.target.closest('[data-nav]');
   if (navButton) return navigate(navButton.dataset.nav);
   if (await accountClick(event)) return;
+  if (await workshopClick(event, workshopContext)) return;
 
   const continueBackgrounds = event.target.closest('[data-action="continue-backgrounds"]');
   if (continueBackgrounds) {
@@ -1031,22 +1045,15 @@ main.addEventListener('click', async (event) => {
 
   const raceChoice = event.target.closest('[data-race]');
   if (raceChoice) {
-    if (state.race !== raceChoice.dataset.race) state.raceChoices = {};
-    state.race = raceChoice.dataset.race;
-    const classIssues = state.className ? raceClassRequirementIssues(state, findClass(state.className)) : [];
-    if (classIssues.length) {
-      setNotice(`${state.className} isn’t available to ${state.race}, so the Class was removed.`);
-      state.className = '';
-      state.classChoices = {};
-    }
+    // Re-choosing the selected custom Race keeps its snapshot.
+    chooseRace(raceChoice.dataset.race, races.some((x) => x.name === raceChoice.dataset.race) ? null : state.customRace);
     saveState();
     return render();
   }
 
   const classChoice = event.target.closest('[data-class]');
   if (classChoice) {
-    if (state.className !== classChoice.dataset.class) state.classChoices = {};
-    state.className = classChoice.dataset.class;
+    chooseClass(classChoice.dataset.class, classes.some((x) => x.name === classChoice.dataset.class) ? null : state.customClass);
     saveState();
     return render();
   }
@@ -1087,9 +1094,11 @@ main.addEventListener('click', async (event) => {
     if (clearChoice.dataset.clear === 'race') {
       state.race = '';
       state.raceChoices = {};
+      state.customRace = null;
     } else {
       state.className = '';
       state.classChoices = {};
+      state.customClass = null;
     }
     saveState();
     return render();
@@ -1290,6 +1299,52 @@ eraseDialog.addEventListener('close', () => {
   }
 });
 
+// Race/Class selection. `custom` is the snapshot of a custom build (workshop.js), or null for a book entry.
+function chooseRace(name, custom = null) {
+  if (state.race !== name || state.customRace?.id !== custom?.id) state.raceChoices = {};
+  state.race = name;
+  state.customRace = custom;
+  const classIssues = state.className ? raceClassRequirementIssues(state, findClass(state.className, state)) : [];
+  if (classIssues.length) {
+    setNotice(`${state.className} isn’t available to ${state.race}, so the Class was removed.`);
+    state.className = '';
+    state.classChoices = {};
+    state.customClass = null;
+  }
+}
+
+function chooseClass(name, custom = null) {
+  if (state.className !== name || state.customClass?.id !== custom?.id) state.classChoices = {};
+  state.className = name;
+  state.customClass = custom;
+}
+
+// "Use for this crawler" on a workshop build (also run quietly after its author saves an edit).
+function useBuild(build, { quiet = false } = {}) {
+  const custom = snapshot(build);
+  const entry = buildEntry(build.data);
+  const label = build.kind === 'class' ? 'Class' : 'Race';
+  const trial = build.kind === 'class'
+    ? { ...state, className: entry.name, customClass: custom, classChoices: {} }
+    : { ...state, race: entry.name, customRace: custom, raceChoices: {} };
+  const issues = raceClassRequirementIssues(trial, build.kind === 'class' ? findClass(entry.name, trial) : findRace(entry.name, trial));
+  if (issues.length) {
+    if (!quiet) setNotice(`${entry.name} ${label} requires ${issues.join('; ')}.`, 6000);
+    return;
+  }
+  if (build.kind === 'class') chooseClass(entry.name, custom);
+  else chooseRace(entry.name, custom);
+  saveState();
+  if (quiet) return;
+  setNotice(`${state.name || 'This crawler'} is now using the ${entry.name} ${label}.`, 4000);
+  navigate('raceclass');
+}
+
+const workshopContext = {
+  get state() { return state; },
+  renderMain, setNotice, navigate, useBuild,
+};
+
 const gearById = (id) => state.gear.find((x) => x.id === id);
 
 // Equipment step buttons; true if handled.
@@ -1372,9 +1427,9 @@ async function saveToAccount() {
 
 // Clicks on account controls in the header or the My Crawlers page; true if handled.
 async function accountClick(event) {
-  const target = event.target.closest('[data-action="account"], [data-action="profile"], [data-action="save-crawler"], [data-action="sign-out"], [data-account-mode], [data-account-action], [data-open-character], [data-delete-character]');
+  const target = event.target.closest('[data-action="account"], [data-action="profile"], [data-action="workshop"], [data-action="save-crawler"], [data-action="sign-out"], [data-account-mode], [data-account-action], [data-open-character], [data-delete-character]');
   if (!target) return false;
-  if (target.dataset.action === 'account' || target.dataset.action === 'profile') {
+  if (target.dataset.action === 'account' || target.dataset.action === 'profile' || target.dataset.action === 'workshop') {
     navigate(target.dataset.action);
   } else if (isAccountAction(target.dataset.accountAction)) {
     const message = await accountAction(target.dataset.accountAction);
@@ -1450,6 +1505,7 @@ main.addEventListener('submit', async (event) => {
 });
 
 main.addEventListener('change', (event) => {
+  if (workshopChange(event, workshopContext)) return;
   const draft = event.target.closest('[data-level-draft], [data-skill-draft]');
   if (draft) {
     if (draft.dataset.levelDraft === 'floor') levelDraft.floor = draft.value;
@@ -1561,6 +1617,7 @@ main.addEventListener('change', (event) => {
 });
 
 main.addEventListener('input', (event) => {
+  if (workshopInput(event)) return;
   const target = event.target;
   if (target.matches('[data-bind]') && target.type !== 'checkbox' && target.tagName !== 'SELECT') {
     setPath(target.dataset.bind, target.value);

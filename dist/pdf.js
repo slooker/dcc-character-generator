@@ -235,7 +235,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   if (state.combatType === 'hand') reviewNotes.push('Paired hand-to-hand Damage Effect treated as Rank 3 per GM-approved interpretation.');
   if (d.dayNight) reviewNotes.push('Stats, Mods and Mana shown as two numbers: the first is daytime, the second is night time.');
   // Race/Class benefits that aren't fully captured by numbers on the sheet.
-  for (const [label, entry] of [['Race', findRace(state.race)], ['Class', findClass(state.className)]]) {
+  for (const [label, entry] of [['Race', findRace(state.race, state)], ['Class', findClass(state.className, state)]]) {
     const text = entry?.benefits.filter((_, i) => !entry.effects[i].length || entry.effects[i].some((x) => x.type === 'dayNight')) || [];
     if (text.length) reviewNotes.push(`${label} (${entry.name}): ${text.join('; ')}`);
   }

@@ -1,5 +1,6 @@
 import { attacks, utilitySkills, damageEffects } from './details.js';
 import { races, classes, skillCatalog } from './races-classes.js';
+import { buildEntry, buildErrors, normalizeBuild } from './builds.js';
 import {
   gearItems, gearName, gearStatBonuses, gearSkillBonuses, gearDr, equipmentErrors, normalizeGearItem, bonusText,
 } from './equipment.js';
@@ -237,6 +238,8 @@ export function initialState() {
     className: '',
     raceChoices: {},
     classChoices: {},
+    customRace: null,
+    customClass: null,
     floor: 1,
     raceClassFloor: 3,
     levelUps: [],
@@ -268,6 +271,9 @@ export function normalizeState(raw) {
   merged.clubs = { ...base.clubs, ...(raw.clubs || {}) };
   merged.raceChoices = raw.raceChoices && typeof raw.raceChoices === 'object' ? raw.raceChoices : {};
   merged.classChoices = raw.classChoices && typeof raw.classChoices === 'object' ? raw.classChoices : {};
+  const snapshot = (value) => (value && typeof value === 'object' && value.build && typeof value.build === 'object' ? value : null);
+  merged.customRace = snapshot(raw.customRace);
+  merged.customClass = snapshot(raw.customClass);
   merged.levelUps = Array.isArray(raw.levelUps) ? raw.levelUps : [];
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
@@ -360,12 +366,27 @@ export function attackRowsForSheet(state) {
 // onward). Requirement types are documented in tools/build_race_class_data.py.
 const clubKeys = { 'Desperado Club': 'desperado', 'Club Vanquisher': 'vanquisher' };
 
-export function findRace(name) {
-  return races.find((x) => x.name === name) || null;
+// A custom Race/Class (builds.js) is a snapshot on the crawler, in
+// state.customRace / state.customClass as { id, author, build }, so the sheet
+// doesn't change if its author later edits or deletes it.
+const customEntries = new WeakMap();
+function customEntry(snapshot, name, kind) {
+  if (!snapshot?.build || snapshot.build.kind !== kind) return null;
+  if (!customEntries.has(snapshot)) customEntries.set(snapshot, buildEntry(snapshot.build, { buildId: snapshot.id ?? null, author: snapshot.author || '' }));
+  const entry = customEntries.get(snapshot);
+  return entry.name === name ? entry : null;
 }
 
-export function findClass(name) {
-  return classes.find((x) => x.name === name) || null;
+export function findRace(name, state = null) {
+  return races.find((x) => x.name === name) || customEntry(state?.customRace, name, 'race');
+}
+
+export function findClass(name, state = null) {
+  return classes.find((x) => x.name === name) || customEntry(state?.customClass, name, 'class');
+}
+
+export function isRaceEntry(entry) {
+  return Boolean(entry) && (entry.kind === 'race' || races.includes(entry));
 }
 
 export function skillRanks(skills) {
@@ -541,9 +562,9 @@ function computeSkills(state, { raceName = state.race, includeRace = true, inclu
   applySkillUps(state, skills, early, () => RANK_CAP, report);
 
   const preRank = new Map([...skills].map(([key, skill]) => [key, skill.rank]));
-  const race = includeRace ? findRace(raceName) : null;
+  const race = includeRace ? findRace(raceName, state) : null;
   if (race) applyEntrySkills(skills, race, raceName === state.race ? state.raceChoices : {}, 'Race');
-  const cls = includeClass ? findClass(state.className) : null;
+  const cls = includeClass ? findClass(state.className, state) : null;
   if (cls) applyEntrySkills(skills, cls, state.classChoices, 'Class');
   skills.forEach((skill, key) => {
     const raw = skill.rank;
@@ -610,8 +631,8 @@ export function skillUpReport(state) {
 
 function raceClassEffects(state) {
   return [
-    ...entryEffects(findRace(state.race), state.raceChoices).map((x) => ({ ...x, from: 'Race' })),
-    ...entryEffects(findClass(state.className), state.classChoices).map((x) => ({ ...x, from: 'Class' })),
+    ...entryEffects(findRace(state.race, state), state.raceChoices).map((x) => ({ ...x, from: 'Race' })),
+    ...entryEffects(findClass(state.className, state), state.classChoices).map((x) => ({ ...x, from: 'Class' })),
   ];
 }
 
@@ -644,6 +665,10 @@ export function enhancedStats(state) {
   const out = unenhancedStats(state);
   const bonus = gearStatBonuses(state);
   stats.forEach((key) => { if (out[key] !== '') out[key] = Math.max(1, out[key] + bonus[key]); });
+  // A custom "Stat is capped at 10" detriment holds even against gear (p. 161).
+  raceClassEffects(state).filter((x) => x.type === 'statCap' && x.strict).forEach((x) => {
+    if (out[x.stat] !== '') out[x.stat] = Math.min(out[x.stat], x.max);
+  });
   return out;
 }
 
@@ -674,7 +699,7 @@ export function damageResistance(state) {
 // Choices still needed for the chosen Race/Class, with a readable prompt.
 export function raceClassChoiceIssues(state) {
   const out = [];
-  [['Race', findRace(state.race), state.raceChoices], ['Class', findClass(state.className), state.classChoices]].forEach(([label, entry, choices]) => {
+  [['Race', findRace(state.race, state), state.raceChoices], ['Class', findClass(state.className, state), state.classChoices]].forEach(([label, entry, choices]) => {
     entryEffects(entry, choices).forEach((effect) => {
       if ((effect.type === 'skillPick' || effect.type === 'rankLimitPick') && pickedSkills(effect).length !== effect.count) {
         out.push(`${entry.name} ${label}: choose ${effect.count === 1 ? 'one' : effect.count} for “${effect.benefit}”.`);
@@ -695,7 +720,7 @@ function catSpecies(state) {
 // Without a chosen Race the crawler keeps their entering Race (p. 128); every
 // starting origin in the supplied creation rules is Earth-based.
 function raceContext(state, raceName) {
-  const race = findRace(raceName);
+  const race = findRace(raceName, state);
   if (race) return { name: race.name, earth: race.earth, cannotWorship: race.cannotWorship };
   return { name: state.kind === 'human' ? 'Human' : catSpecies(state) ? 'Cat' : '', earth: true, cannotWorship: false };
 }
@@ -738,7 +763,7 @@ export function raceClassRequirementIssues(state, entry, raceName = state.race) 
   if (!entry) return ['an entry from the supplied Race/Class lists'];
   // Race comes before Class (p. 128): Races check base Skills; Classes check
   // Skills after that Race's bonuses.
-  const skills = skillsWithRaceClass(state, { raceName, includeRace: !races.includes(entry), includeClass: false, includeAfter: false });
+  const skills = skillsWithRaceClass(state, { raceName, includeRace: !isRaceEntry(entry), includeClass: false, includeAfter: false });
   const race = raceContext(state, raceName);
   return entry.requires.map((x) => requirementIssue(state, x, skills, race)).filter(Boolean);
 }
@@ -754,13 +779,19 @@ export function eligibleClasses(state, raceName = state.race) {
 export function raceClassErrors(state) {
   const out = [];
   if (state.race) {
-    const issues = raceClassRequirementIssues(state, findRace(state.race));
+    const issues = raceClassRequirementIssues(state, findRace(state.race, state));
     if (issues.length) out.push(`${state.race} Race requires ${issues.join('; ')}.`);
   }
   if (state.className) {
-    const issues = raceClassRequirementIssues(state, findClass(state.className));
+    const issues = raceClassRequirementIssues(state, findClass(state.className, state));
     if (issues.length) out.push(`${state.className} Class requires ${issues.join('; ')}.`);
   }
+  // A shared build could have been saved by something other than this editor.
+  [['Race', state.race, state.customRace], ['Class', state.className, state.customClass]].forEach(([label, name, snapshot]) => {
+    if (!snapshot || snapshot.build?.name?.replace(/\s+/g, ' ').trim() !== name) return;
+    const issues = buildErrors(normalizeBuild(snapshot.build));
+    if (issues.length) out.push(`The custom ${label} ${name} doesn’t follow the Build System: ${issues[0]}`);
+  });
   const popularity = String(state.popularity ?? '').trim();
   if (popularity && !/^\d{1,4}$/.test(popularity)) out.push('Popularity must be a whole number of 0 or more.');
   out.push(...raceClassChoiceIssues(state));
@@ -818,6 +849,7 @@ export function derived(state) {
   const effects = raceClassEffects(state);
   const raceSize = effects.find((x) => x.type === 'size' && x.from === 'Race')?.value;
   const moveBonus = effects.filter((x) => x.type === 'move').reduce((sum, x) => sum + x.value, 0);
+  const stepBonus = effects.filter((x) => x.type === 'step').reduce((sum, x) => sum + x.value, 0);
   return {
     mods,
     health: con ? con * 10 : null,
@@ -831,7 +863,7 @@ export function derived(state) {
     evadeDex: mods.Dex,
     evadeBuff: evadeBuff(state),
     move: 20 + moveBonus,
-    step: 10,
+    step: 10 + stepBonus,
     aiFavor: state.kind === 'human' ? 1 + humanLevelFavor(state) : state.kind === 'animal' ? 0 + humanLevelFavor(state) : null,
     level: level(state),
     floor: currentFloor(state),
@@ -1076,7 +1108,7 @@ export function missingDetails(state) {
     'The complete Level 10 / Third Floor advancement process is not built yet.',
   ];
   if (state.race || state.className) notes.push('Race and Class Stat, Skill, Spell, DR, Size and Move bonuses are applied. Situational benefits are written to the sheet notes for your GM.');
-  if (findClass(state.className)?.requires.some((x) => x.type === 'worshipAllowed')) notes.push(`${state.className} must worship a deity (p. 163). Deity selection is not built yet.`);
+  if (findClass(state.className, state)?.requires.some((x) => x.type === 'worshipAllowed')) notes.push(`${state.className} must worship a deity (p. 163). Deity selection is not built yet.`);
   if (state.healSlot === '') notes.push('Heal is known but not placed in the Hotlist; the spell rules say Spells must be in the Hotlist for combat or other stressful situations.');
   if (state.combatType === 'hand') notes.push('The Bronze Weapon Box’s weapon and drawback are not defined by the supplied creation pages; the GM determines them.');
   if (['Mind Tickle', 'Vine Porn'].includes(state.combat)) notes.push('The sheet uses the listed base Mana cost. These Spells are Favored by a Class, but no Class is assigned by the supplied starting-crawler rules.');
