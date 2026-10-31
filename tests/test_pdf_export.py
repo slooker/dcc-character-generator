@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-MODULES = ("details.js", "races-classes.js", "builds.js", "equipment.js", "rules.js", "pdf.js")
+MODULES = ("details.js", "races-classes.js", "builds.js", "equipment.js", "rules.js", "skill-text.js", "pdf.js")
 
 
 def export_pdf(state_js: str) -> PdfReader:
@@ -40,6 +40,11 @@ def export_pdf(state_js: str) -> PdfReader:
     if not out or out.startswith("ERR"):
         raise AssertionError(f"PDF export failed: {out}")
     return PdfReader(io.BytesIO(bytes(json.loads(out))))
+
+
+def sheet_pages(reader: PdfReader) -> list:
+    """The sheet's pages, without the Skills & Spells Reference pages at the end."""
+    return [p for p in reader.pages if "SKILLS & SPELLS REFERENCE" not in p.extract_text()]
 
 
 def export_fields(state_js: str) -> dict:
@@ -125,7 +130,7 @@ class SkillOverflowPageTests(unittest.TestCase):
               return s;
             })()"""
         )
-        self.assertEqual(len(reader.pages), 5)
+        self.assertEqual(len(sheet_pages(reader)), 5)
         main_rows = {(reader.get_fields() or {}).get(f"Text Field {103 + 6 * i}", {}).get("/V") for i in range(20)}
         extra_text = reader.pages[3].extract_text()
         self.assertIn("Wilbur", extra_text)  # an Elemental Monk spell past row 20
@@ -136,3 +141,54 @@ class SkillOverflowPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class UnfinishedSheetTests(unittest.TestCase):
+    """A sheet with issues can still be downloaded; its notes list the issues."""
+
+    def test_issues_are_listed_in_the_notes(self) -> None:
+        fields = export_fields("(() => { const s = initialState(); s.name = 'Half Done'; s.kind = 'human'; return s; })()")
+        notes = fields["Text Field 102"]
+        self.assertRegex(notes, r"^THIS SHEET STILL HAS \d+ ISSUES:")
+        self.assertIn("• Choose or write a Past Trauma.", notes)
+
+    def test_finished_sheet_has_no_issue_note(self) -> None:
+        # Stand in for a crawler that passes validation.
+        fields = export_fields("(() => { errors = () => []; const s = initialState(); s.name = 'Done'; s.kind = 'human'; return s; })()")
+        self.assertNotIn("STILL HAS", fields.get("Text Field 102") or "")
+
+
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class SkillDetailTests(unittest.TestCase):
+    """Range and Mana on attack rows, Upgrades in Skill notes, and the Reference page."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.reader = export_pdf(
+            """(() => {
+              const s = initialState(); s.name = 'Tess'; s.kind = 'human';
+              s.backgrounds = backgrounds.human.map((st) => ({ option: 0, picks: st.options[0].skills.slice(0, 2).map((x) => x.name) }));
+              s.combatType = 'spell'; s.combat = 'Shock Treatment';
+              s.stats = { Str: '2', Int: '6', Con: '4', Dex: '5', Cha: '3' };
+              return s;
+            })()"""
+        )
+        cls.fields = {name: field.get("/V") for name, field in (cls.reader.get_fields() or {}).items()}
+
+    def test_attack_rows_show_range_and_mana(self) -> None:
+        row = next(i for i in range(5) if self.fields.get(("Text Field 55", "Text Field 61", "Text Field 67", "Text Field 73", "Text Field 79")[i]) == "Shock Treatment")
+        effects = self.fields[("Text Field 56", "Text Field 62", "Text Field 68", "Text Field 74", "Text Field 80")[row]]
+        self.assertTrue(effects.startswith("Range 30 ft; Mana 2; Electric"), effects)
+
+    def test_skill_notes_give_the_next_upgrade_not_just_the_source(self) -> None:
+        notes = [self.fields.get(f"Text Field {107 + 6 * i}") or "" for i in range(20)]
+        shock = next(x for x in notes if "Stunned Debuff" in x)
+        self.assertTrue(shock.startswith("Range 30 ft; Mana 2. Next, Rank 5: +1d2 base damage"), shock)
+        self.assertFalse(any(x.strip() in ("Starting combat", "Chosen combat") for x in notes))
+
+    def test_reference_page_lists_every_upgrade(self) -> None:
+        text = "\n".join(p.extract_text() for p in self.reader.pages[4:])
+        self.assertIn("SKILLS & SPELLS REFERENCE - TESS", text)
+        self.assertIn("Shock Treatment - Rank 3", text)
+        self.assertIn("Rank 15: +1d2 base damage, and if you make this attack at melee range", text)

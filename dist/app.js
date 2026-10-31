@@ -2,7 +2,7 @@ import {
   backgrounds, weapons, spells, handToHand, stats, statNames, storyOptions,
   initialState, normalizeState, selectedSkills, selectedNames, allSkills, allAttacks,
   attackRowsForSheet, derived, carriedItems, hotlist, errors, missingDetails,
-  conflicts, stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
+  stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
   skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
@@ -17,8 +17,9 @@ import {
 } from './equipment.js';
 import {
   account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
-  deleteCharacter, setLink, saveStatus, verified, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
+  deleteCharacter, setLink, saveStatus, verified, workshopLink, workshopLockedMessage, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
 } from './account.js';
+import { aboutView } from './about.js';
 import { workshop, loadWorkshop, workshopView, buildEditorView, workshopClick, workshopChange, workshopInput, snapshot } from './workshop.js';
 
 const STORAGE_KEY = 'dcc-crawler-builder-v1';
@@ -101,7 +102,11 @@ function setPath(path, value) {
 }
 
 function navigate(step) {
-  if (step === 'account' || step === 'profile' || step === 'workshop' || step === 'build-edit') {
+  if ((step === 'workshop' || step === 'build-edit') && !verified()) {
+    setNotice(workshopLockedMessage(), 5000);
+    return;
+  }
+  if (step === 'account' || step === 'profile' || step === 'workshop' || step === 'build-edit' || step === 'about') {
     if (step === 'build-edit' && !workshop.draft) step = 'workshop';
     activeStep = step;
     render();
@@ -307,14 +312,13 @@ function identityStep() {
       <div class="panel-head"><h2>Origin</h2>${sourceRef('p. 102')}</div>
       <div class="cards">
         <button type="button" class="choice" data-origin="human" aria-pressed="${state.kind === 'human'}"><span class="symbol">H</span><strong>Human</strong><small>Normal starting path. Starts with AI Favor 1 and is typically Medium (4).</small></button>
-        <button type="button" class="choice" data-origin="animal" aria-pressed="${state.kind === 'animal'}"><span class="symbol">A</span><strong>Earth-based animal</strong><small>Optional path requiring GM permission. Starting AI Favor is spent, and the group is limited to one such crawler.</small></button>
+        <button type="button" class="choice" data-origin="animal" aria-pressed="${state.kind === 'animal'}"><span class="symbol">A</span><strong>Earth-based animal</strong><small>Optional path: check with your GM. Starting AI Favor is spent, and a group can have only one animal crawler.</small></button>
       </div>
       ${animal ? `<div class="animal-fields">
         <div class="fields">
           <label class="field">Animal species<input data-bind="species" value="${esc(state.species)}" maxlength="50" placeholder="Cat, raccoon, dog, goat…"></label>
           <label class="field">Size<select data-bind="size" data-rerender="true"><option value="">Choose size</option>${Object.entries(sizeNames).map(([value, label]) => `<option value="${value}" ${String(state.size) === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select><small>Standard animal creation allows sizes 2-4.</small></label>
         </div>
-        <label class="check"><input type="checkbox" data-bind="animalPermission" ${state.animalPermission ? 'checked' : ''}> <span>My GM allows the animal crawler, and the group’s one-animal-crawler limit is satisfied.</span></label>
         <div class="callout">The Enhanced Pet Biscuit / later Race transformation discussion does not supply a complete starting transformation builder here. This first draft records the earth-animal crawler you are creating.</div>
       </div>` : ''}
     </section>
@@ -399,7 +403,7 @@ function combatStep() {
       ${type ? `<div class="combat-options">${options}</div>` : ''}
       ${type === 'weapon' && state.combat ? `<label class="field unique-weapon">Unique weapon name <span class="optional">optional</span><input data-bind="customWeapon" value="${esc(state.customWeapon)}" maxlength="55" placeholder="Example: Tire Iron"><small>If entered, the sheet will show “${esc(state.customWeapon || 'Tire Iron')} (${esc(state.combat)})”; the selected listed weapon supplies the mechanics.</small></label>` : ''}
       ${type === 'spell' ? '<div class="callout">Choosing an attack Spell grants five Standard Mana Potions. You will place the Spell and the potions in Hotlist slots later. All crawlers also know Heal.</div>' : ''}
-      ${type === 'hand' && state.combat ? `<div class="callout"><strong>${esc(handToHand[state.combat])}</strong> is the paired Damage Effect. The creation wording about both hand-to-hand Skills starting at Rank 3 is not perfectly explicit; this builder uses Rank 3 only after you confirm that interpretation with your GM on Review.</div>` : ''}
+      ${type === 'hand' && state.combat ? `<div class="callout"><strong>${esc(handToHand[state.combat])}</strong> is the paired Damage Effect. Both hand-to-hand Skills start at Rank 3 (p. 109).</div>` : ''}
       ${selectedAttack?.notes ? `<p class="micro muted"><strong>Restriction:</strong> ${esc(selectedAttack.notes)}</p>` : ''}
     </section>
     ${actions('backgrounds', 'stats')}
@@ -588,27 +592,6 @@ function attacksStep() {
   `;
 }
 
-function conflictReview() {
-  const items = conflicts(state);
-  if (!items.length) return '';
-  return `<section class="panel warning-panel"><div class="panel-head"><h2>Printed source discrepancies</h2>${sourceRef('Background tables vs. detailed Skill entries')}</div>
-    <p class="muted">The supplied PDFs print different Stat associations for these selected Skills. The builder will not silently choose one. Record the ruling your GM wants.</p>
-    ${items.map((item) => `<fieldset class="ruling"><legend>${esc(item.name)}</legend>
-      <label><input type="radio" name="ruling-${esc(item.name)}" data-ruling="${esc(item.name)}" value="${esc(item.tableStat)}" ${state.rulings[item.name] === item.tableStat ? 'checked' : ''}> Background table: ${esc(item.tableStat)} (p. ${item.tablePage})</label>
-      <label><input type="radio" name="ruling-${esc(item.name)}" data-ruling="${esc(item.name)}" value="${esc(item.detailStat)}" ${state.rulings[item.name] === item.detailStat ? 'checked' : ''}> Detailed Skill entry: ${esc(item.detailStat)} (p. ${item.page})</label>
-    </fieldset>`).join('')}
-    <label class="check"><input type="checkbox" data-bind="rulingsApproved" ${state.rulingsApproved ? 'checked' : ''}> <span>These selections match the GM’s ruling for this crawler.</span></label>
-  </section>`;
-}
-
-function handReview() {
-  if (state.combatType !== 'hand') return '';
-  return `<section class="panel warning-panel"><div class="panel-head"><h2>Hand-to-hand Damage Effect interpretation</h2>${sourceRef('creation p. 109')}</div>
-    <p>The builder treats <strong>${esc(handToHand[state.combat] || '')}</strong> as Rank 3 alongside the selected hand-to-hand Attack Skill. The supplied creation wording can be read that way, but is not perfectly explicit.</p>
-    <label class="check"><input type="checkbox" data-bind="handEffectApproved" ${state.handEffectApproved ? 'checked' : ''}> <span>My GM accepts this Rank 3 interpretation.</span></label>
-  </section>`;
-}
-
 function reviewStep() {
   const issues = errors(state);
   const notes = missingDetails(state);
@@ -619,11 +602,9 @@ function reviewStep() {
     <p class="eyebrow">STEP 12 · REVIEW & EXPORT</p>
     <h1>${issues.length ? 'Finish the crawler.' : 'Crawler ready for the sheet.'}</h1>
     <p class="intro">Nothing is randomly assigned except the crawler number. Mandatory calculations are derived automatically from your choices.</p>
-    ${conflictReview()}
-    ${handReview()}
     <section class="panel ${issues.length ? 'warning-panel' : 'success-panel'}">
       <div class="panel-head"><h2>${issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'} to resolve` : 'Validation passed'}</h2>${sourceRef('Source-bound validation')}</div>
-      ${issues.length ? `<ul class="issues">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="success">All required choices for this first-draft starting crawler are complete.</p>'}
+      ${issues.length ? `<ul class="issues">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul><p class="muted micro">You can still download the sheet. Its notes will say it has issues and list them.</p>` : '<p class="success">All required choices for this first-draft starting crawler are complete.</p>'}
     </section>
     <section class="panel review-grid-panel">
       <div class="review-grid">
@@ -641,7 +622,7 @@ function reviewStep() {
       <button class="secondary" data-nav="equipment">Back</button>
       <div class="action-right">
         <button class="secondary danger-button" data-action="new-crawler">Start a new crawler</button>
-        <button class="primary" data-action="download" ${issues.length || exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : 'Download filled character sheet'}</button>
+        <button class="primary" data-action="download" ${exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : issues.length ? 'Download sheet with issues' : 'Download filled character sheet'}</button>
       </div>
     </div>
   `;
@@ -701,7 +682,19 @@ function raceClassResults() {
 
 function customLink(kind) {
   const label = kind === 'race' ? 'Race' : 'Class';
-  return `<p class="custom-link"><button type="button" class="secondary" data-nav="workshop">Custom ${label}s</button> <span class="muted micro">Build your own ${label} with the Build System, or use one another crawler shared.</span></p>`;
+  return `<p class="custom-link">${workshopLink(`Custom ${label}s`)} <span class="muted micro">Build your own ${label} with the Build System, or use one another crawler shared.</span></p>`;
+}
+
+// Most new crawlers haven't reached the Third Floor, so skipping is one click
+// from the top of the step.
+function skipRaceClass() {
+  const floor = Number(state.floor) || 1;
+  const chosen = Boolean(state.race || state.className);
+  const early = floor < 3 && !chosen;
+  return `<div class="callout skip-callout${early ? ' skip-early' : ''}">
+    <span>${early ? `This crawler is on Floor ${floor}. Race and Class come at the Third Floor, so you can skip this step for now.` : chosen ? 'Race and Class are optional. Skipping keeps what you’ve chosen here.' : 'Race and Class are optional. Skip this step if your crawler hasn’t chosen them yet.'}</span>
+    <button type="button" class="${early ? 'primary' : 'secondary'}" data-nav="advancement">Skip Race &amp; Class</button>
+  </div>`;
 }
 
 function raceClassStep() {
@@ -717,6 +710,7 @@ function raceClassStep() {
     <p class="eyebrow">STEP 9 · RACE & CLASS</p>
     <h1>Choose a Race and Class</h1>
     <p class="intro">Crawlers choose a Race and Class on reaching the Third Floor, but you can add them here at any time. Only the Races and Classes whose prerequisites this crawler meets are listed. Leaving Race empty keeps the Race you entered the dungeon with.</p>
+    ${skipRaceClass()}
     <section class="panel">
       <div class="panel-head"><h2>Crawler record</h2>${sourceRef('Prerequisites, pp. 128-158')}</div>
       <p class="muted micro">Skill Ranks come from your Backgrounds and Combat choices. Record anything else your crawler has earned so limited options can unlock.</p>
@@ -973,6 +967,7 @@ function renderMain() {
     profile: profileView,
     workshop: () => workshopView(state),
     'build-edit': buildEditorView,
+    about: aboutView,
   };
   main.innerHTML = renderers[activeStep]();
 }
@@ -989,13 +984,10 @@ function resetDownstreamAfterOrigin() {
   state.combatType = '';
   state.combat = '';
   state.customWeapon = '';
-  state.rulings = {};
-  state.rulingsApproved = false;
   state.attackSheet = [];
   state.weaponLocation = '';
   state.spellSlot = '';
   state.potionsSlot = '';
-  state.handEffectApproved = false;
 }
 
 nav.addEventListener('click', (event) => {
@@ -1110,7 +1102,6 @@ main.addEventListener('click', async (event) => {
       state.kind = origin.dataset.origin;
       state.species = '';
       state.size = state.kind === 'human' ? '4' : '';
-      state.animalPermission = false;
       resetDownstreamAfterOrigin();
       activeBackgroundStage = 0;
       saveState();
@@ -1128,8 +1119,6 @@ main.addEventListener('click', async (event) => {
   if (background) {
     const index = Number(background.dataset.background);
     state.backgrounds[activeBackgroundStage] = { option: index, picks: [] };
-    state.rulings = {};
-    state.rulingsApproved = false;
     state.attackSheet = [];
     saveState();
     return render();
@@ -1142,8 +1131,6 @@ main.addEventListener('click', async (event) => {
     if (selection.picks.includes(name)) selection.picks = selection.picks.filter((x) => x !== name);
     else if (selection.picks.length < 2) selection.picks.push(name);
     else setNotice('Choose exactly two Skills. Remove one before selecting another.');
-    state.rulings = {};
-    state.rulingsApproved = false;
     state.attackSheet = [];
     saveState();
     return render();
@@ -1158,7 +1145,6 @@ main.addEventListener('click', async (event) => {
       state.weaponLocation = '';
       state.spellSlot = '';
       state.potionsSlot = '';
-      state.handEffectApproved = false;
       state.attackSheet = [];
       saveState();
     }
@@ -1172,7 +1158,6 @@ main.addEventListener('click', async (event) => {
     state.weaponLocation = '';
     state.spellSlot = '';
     state.potionsSlot = '';
-    state.handEffectApproved = false;
     state.attackSheet = [];
     saveState();
     return render();
@@ -1427,9 +1412,14 @@ async function saveToAccount() {
 
 // Clicks on account controls in the header or the My Crawlers page; true if handled.
 async function accountClick(event) {
-  const target = event.target.closest('[data-action="account"], [data-action="profile"], [data-action="workshop"], [data-action="save-crawler"], [data-action="sign-out"], [data-account-mode], [data-account-action], [data-open-character], [data-delete-character]');
+  event.target.closest('.account-menu')?.removeAttribute('open');
+  const target = event.target.closest('[data-action="account"], [data-action="profile"], [data-action="workshop"], [data-action="workshop-locked"], [data-action="save-crawler"], [data-action="sign-out"], [data-account-mode], [data-account-action], [data-open-character], [data-delete-character]');
   if (!target) return false;
-  if (target.dataset.action === 'account' || target.dataset.action === 'profile' || target.dataset.action === 'workshop') {
+  if (target.dataset.action === 'workshop-locked') {
+    setNotice(workshopLockedMessage(), 5000);
+  } else if (target.dataset.action === 'workshop' && !verified()) {
+    setNotice(workshopLockedMessage(), 5000);
+  } else if (target.dataset.action === 'account' || target.dataset.action === 'profile' || target.dataset.action === 'workshop') {
     navigate(target.dataset.action);
   } else if (isAccountAction(target.dataset.accountAction)) {
     const message = await accountAction(target.dataset.accountAction);
@@ -1478,6 +1468,18 @@ async function accountClick(event) {
 }
 
 accountBarEl.addEventListener('click', accountClick);
+
+// The account menu closes on a click elsewhere or Escape.
+document.addEventListener('click', (event) => {
+  const menu = accountBarEl.querySelector('.account-menu[open]');
+  if (menu && !menu.contains(event.target)) menu.removeAttribute('open');
+});
+document.addEventListener('keydown', (event) => {
+  const menu = accountBarEl.querySelector('.account-menu[open]');
+  if (event.key !== 'Escape' || !menu) return;
+  menu.removeAttribute('open');
+  menu.querySelector('summary').focus();
+});
 
 main.addEventListener('submit', async (event) => {
   const form = event.target.closest('[data-account-form]');
@@ -1608,12 +1610,6 @@ main.addEventListener('change', (event) => {
     renderNav(); renderSummary();
     return;
   }
-  if (target.matches('[data-ruling]')) {
-    state.rulings[target.dataset.ruling] = target.value;
-    state.rulingsApproved = false;
-    saveState();
-    render();
-  }
 });
 
 main.addEventListener('input', (event) => {
@@ -1733,6 +1729,15 @@ main.addEventListener('pointercancel', (event) => {
   touchHotlistDrag = null;
   clearHotlistDragStyles();
 });
+
+// The header and footer link to pages such as About; /#about opens it.
+document.querySelectorAll('header, footer').forEach((el) => el.addEventListener('click', (event) => {
+  const link = event.target.closest('[data-nav]');
+  if (!link) return;
+  event.preventDefault();
+  navigate(link.dataset.nav);
+}));
+if (location.hash === '#about') activeStep = 'about';
 
 render();
 // Coming back from Google sign-in: /?signed_in=google or /?auth_error=<code>.

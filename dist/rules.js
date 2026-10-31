@@ -53,8 +53,8 @@ Service Industry|Dagger:Dex|Endurance:Con|Sleight of Hand:Dex
 Small Business Owner|Determine Value:None|Negotiation:Cha|Perception:Int
 Medical|Sleight of Hand:Dex|Detect Lies:Int|First Aid:Int
 Law Enforcement|Detect Lies:Int|Handgun:Dex|Investigation:Int
-Gig Worker|Driving:Dex|Escape Artist:Str|Negotiation:Cha
-Teacher|Detect Lies:Int|Perception:Int|Performance:Int
+Gig Worker|Driving:Dex|Escape Artist:Dex|Negotiation:Cha
+Teacher|Detect Lies:Int|Perception:Int|Performance:Cha
 Office Drone|Dumpster Diving:Int|Endurance:Con|Investigation:Int
 Entertainer|Deception:Cha|Good First Impression:Cha|Performance:Cha
 Unhoused|Dumpster Diving:Int|Streetwise:Cha|Survival:Con
@@ -204,15 +204,12 @@ export function initialState() {
     kind: '',
     species: '',
     size: '',
-    animalPermission: false,
     backgrounds: Array.from({ length: 4 }, () => ({ option: null, picks: [] })),
     combatType: '',
     combat: '',
     customWeapon: '',
     stats: { Str: '', Int: '', Con: '', Dex: '', Cha: '' },
     performance: '',
-    rulings: {},
-    rulingsApproved: false,
     story: { trauma: '', looseEnd: '', regret: '' },
     storyMode: { trauma: '', looseEnd: '', regret: '' },
     clothing: { Head: '', Torso: '', Arms: '', Hands: '', Legs: '', Feet: '' },
@@ -233,7 +230,6 @@ export function initialState() {
     spellSlot: '',
     potionsSlot: '',
     attackSheet: [],
-    handEffectApproved: false,
     race: '',
     className: '',
     raceChoices: {},
@@ -267,7 +263,6 @@ export function normalizeState(raw) {
     : base.backgrounds;
   merged.items = Array.isArray(raw.items) && raw.items.length ? raw.items : base.items;
   merged.attackSheet = Array.isArray(raw.attackSheet) ? raw.attackSheet : [];
-  merged.rulings = { ...(raw.rulings || {}) };
   merged.clubs = { ...base.clubs, ...(raw.clubs || {}) };
   merged.raceChoices = raw.raceChoices && typeof raw.raceChoices === 'object' ? raw.raceChoices : {};
   merged.classChoices = raw.classChoices && typeof raw.classChoices === 'object' ? raw.classChoices : {};
@@ -289,15 +284,9 @@ export function selectedSkills(state) {
       .filter((skill) => selection.picks.includes(skill.name))
       .map((skill) => {
         const detail = utilitySkills[skill.name] || attacks[skill.name];
-        const conflict = Boolean(detail && skill.stat !== detail.stat);
-        const chosenStat = conflict ? (state.rulings[skill.name] || skill.stat) : skill.stat;
         return {
           ...detail,
           ...skill,
-          stat: chosenStat,
-          tableStat: skill.stat,
-          detailStat: detail?.stat,
-          conflict,
           rank: stage.rank,
           source: `${stage.name}: ${background.name}`,
           tablePage: stage.page,
@@ -305,14 +294,6 @@ export function selectedSkills(state) {
         };
       });
   });
-}
-
-export function conflicts(state) {
-  const seen = new Map();
-  for (const item of selectedSkills(state).filter((x) => x.conflict)) {
-    if (!seen.has(item.name)) seen.set(item.name, item);
-  }
-  return [...seen.values()];
 }
 
 export function combatSkills(state) {
@@ -1029,7 +1010,6 @@ export function errors(state) {
   if (state.kind === 'animal') {
     if (!String(state.species || '').trim()) out.push('Name the earth-based animal species.');
     if (!['2', '3', '4'].includes(String(state.size))) out.push('Choose an animal size from 2 to 4.');
-    if (!state.animalPermission) out.push('Confirm the GM allows this animal crawler and the group’s one-animal limit is satisfied.');
   }
 
   const stages = backgrounds[state.kind] || [];
@@ -1058,16 +1038,6 @@ export function errors(state) {
 
   if (selectedSkills(state).some((x) => x.name === 'Performance') && !String(state.performance || '').trim()) {
     out.push('Choose a starting Performance specialty.');
-  }
-
-  const sourceConflicts = conflicts(state);
-  if (sourceConflicts.some((x) => ![x.tableStat, x.detailStat].includes(state.rulings[x.name]))) {
-    out.push('Resolve each printed Stat discrepancy on the Review step.');
-  }
-  if (sourceConflicts.length && !state.rulingsApproved) out.push('Confirm the GM-approved rulings for the printed Stat discrepancies.');
-
-  if (state.combatType === 'hand' && !state.handEffectApproved) {
-    out.push('Confirm the GM accepts Rank 3 for the paired hand-to-hand Damage Effect.');
   }
 
   for (const key of ['trauma', 'looseEnd', 'regret']) {
@@ -1121,7 +1091,7 @@ export function stepCompletion(state) {
   const stages = backgrounds[state.kind] || [];
   const backgroundsDone = stages.length === 4 && stages.every((_, i) => backgroundStageComplete(state, i));
   return {
-    identity: Boolean(state.name.trim() && ['human', 'animal'].includes(state.kind) && (state.kind !== 'animal' || (state.species.trim() && ['2', '3', '4'].includes(String(state.size)) && state.animalPermission))),
+    identity: Boolean(state.name.trim() && ['human', 'animal'].includes(state.kind) && (state.kind !== 'animal' || (state.species.trim() && ['2', '3', '4'].includes(String(state.size))))),
     backgrounds: backgroundsDone,
     combat: Boolean(state.combatType && state.combat),
     stats: statValidationErrors(state).length === 0,

@@ -60,22 +60,29 @@ class AccountUiTests(unittest.TestCase):
 
     def test_header_bar_by_account_state(self) -> None:
         self.js.eval("account.user = null;")
-        self.assertIn("Sign in to save", self.val("accountBar(crawler('Carl'))"))
+        signed_out = self.val("accountBar(crawler('Carl'))")
+        self.assertIn("Sign in to save", signed_out)
+        # Custom Races & Classes need a verified account: greyed out, and says so when clicked.
+        self.assertIn('class="secondary account-button locked" aria-disabled="true" data-action="workshop-locked"', signed_out)
+        self.assertIn("Sign in with a verified email", self.val("workshopLockedMessage()"))
         self.js.eval("account.user = { ...verifiedUser }; account.characters = [row(7, 'Carl')];")
         bar = self.val("accountBar(crawler('Donut'))")
-        self.assertIn("My Crawlers <span>1/5</span>", bar)
+        self.assertIn('My Crawlers <span class="account-slots">1/5</span>', bar)
         self.assertIn("Save crawler", bar)
         self.js.eval("var s = crawler('Carl'); setLink(7, s);")
         self.assertRegex(self.val("accountBar(s)"), r"disabled>Saved<")
         self.js.eval("account.available = false;")
         self.assertEqual(self.val("accountBar(s)"), "")
 
-    def test_sign_out_is_the_last_header_button(self) -> None:
-        bar = self.val("accountBar(crawler('Carl'))")
-        self.assertTrue(bar.strip().endswith('data-action="sign-out">Sign out</button>'), bar)
-        self.assertIn('data-action="profile"', bar)
+    def test_account_pages_are_in_a_menu_under_the_name(self) -> None:
         self.js.eval("account.user.name = 'Carl';")
-        self.assertIn(">Carl</button>", self.val("accountBar(crawler('x'))"))
+        bar = self.val("accountBar(crawler('x'))")
+        menu = bar[bar.index('<details class="account-menu">'):]
+        self.assertIn('<span class="account-name">Carl</span>', menu)
+        actions = re.findall(r'role="menuitem" data-action="([^"]+)"', menu)
+        self.assertEqual(actions, ["account", "workshop", "profile", "sign-out"])
+        # Save stays outside the menu.
+        self.assertLess(bar.index("save-crawler"), bar.index("account-menu"))
 
     def test_unverified_account_must_verify_first(self) -> None:
         self.js.eval("account.user = { ...verifiedUser, emailVerified: false };")
@@ -83,6 +90,8 @@ class AccountUiTests(unittest.TestCase):
         self.assertIn("Verify email", bar)
         self.assertNotIn("save-crawler", bar)
         self.assertIn("Sign out", bar)
+        self.assertIn('data-action="workshop-locked"', bar)
+        self.assertIn("Verify your email", self.val("workshopLockedMessage()"))
         # No code out yet (e.g. signed in before verification existed): offer to send one.
         page = self.val("accountView(crawler('Carl'))")
         self.assertIn('data-account-action="resend-verify"', page)

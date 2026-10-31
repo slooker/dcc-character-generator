@@ -1,7 +1,8 @@
 import {
-  stats, allSkills, attackRowsForSheet, derived, carriedItems, hotlist, conflicts,
-  unenhancedStats, enhancedStats, findRace, findClass,
+  stats, allSkills, attackRowsForSheet, derived, carriedItems, hotlist,
+  unenhancedStats, enhancedStats, findRace, findClass, errors,
 } from './rules.js';
+import { skillText } from './skill-text.js';
 
 const attackFields = [
   ['Text Field 55', 'Text Field 551', 'Text Field 52', 'Text Field 53', 'Text Field 54', 'Text Field 56'],
@@ -57,11 +58,35 @@ function skillStatText(skill, modText) {
   return `${skill.stat} ${modText[skill.stat] || ''}`.trim();
 }
 
+// A Skill/Spell's stat lines and Upgrades from the book (skill-text.js).
+const bookText = (name) => skillText[asText(name).toLowerCase()] || null;
+const bookProp = (entry, key) => entry?.props.find(([k]) => k === key)?.[1] || '';
+const shortRange = (value) => value.replace(/(\d+)\s*(?:feet|foot|ft)\b/i, '$1 ft');
+
+// Range, Mana, Duration and Cooldown, short, for the sheet's boxes.
+function bookBasics(name, fallback = {}) {
+  const entry = bookText(name);
+  const range = shortRange(bookProp(entry, 'Range')) || (fallback.range ? `${fallback.range} ft` : '');
+  const mana = bookProp(entry, 'Mana Cost') || fallback.mana || '';
+  return [range && `Range ${range}`, mana && `Mana ${mana}`, ...['Duration', 'Cooldown'].map((k) => bookProp(entry, k) && `${k} ${bookProp(entry, k)}`)].filter(Boolean);
+}
+
+// Upgrades already reached at this Rank, then the next one.
+function upgradeNotes(skill) {
+  const upgrades = bookText(skill.name)?.upgrades || [];
+  const rank = Number(skill.rank) || 0;
+  const next = upgrades.find(([r]) => r > rank);
+  return [
+    ...upgrades.filter(([r]) => r <= rank).map(([r, text]) => `Rank ${r}: ${text}`),
+    next ? `Next, Rank ${next[0]}: ${next[1]}` : '',
+  ].filter(Boolean);
+}
+
 function attackEffects(attack) {
-  const parts = [attack.effect];
+  const parts = [...bookBasics(attack.name, attack), attack.effect];
   if (attack.notes) parts.push(compact(attack.notes, 75));
   if (attack.favor) parts.push(`AI Favor ${attack.favor} (conditional)`);
-  return compact(parts.filter(Boolean).join('; '), 120);
+  return compact(parts.filter(Boolean).join('; '), 160);
 }
 
 function gearText(item) {
@@ -79,15 +104,20 @@ function fillSkillRows(form, skills, state, d) {
     for (let offset = 0; offset < 5; offset++) clearField(form, `Text Field ${base + offset}`);
     const skill = skills[row];
     if (!skill) continue;
-    let notes = skill.notes || '';
-    if (skill.name === 'Performance' && state.performance) notes = `Specialty: ${state.performance}. ${notes}`;
-    if (skill.conflict && state.rulings[skill.name]) notes = `GM ruling uses ${state.rulings[skill.name]}. ${notes}`;
-    if (skill.source) notes = `${skill.source}. ${notes}`;
+    // The rules that matter at the table first; where the Skill came from
+    // only if there's room. Everything is on the Reference page.
+    const notes = [
+      skill.name === 'Performance' && state.performance ? `Specialty: ${state.performance}.` : '',
+      skill.notes || '',
+      bookBasics(skill.name).join('; '),
+      ...upgradeNotes(skill),
+    ].filter(Boolean).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(' ');
+    const withSource = skill.source && notes.length + skill.source.length < 175 ? `${notes} (${skill.source})`.trim() : notes || skill.source || '';
     setField(form, `Text Field ${base}`, skill.label || skill.name, { fontSize: 7.5 });
     setField(form, `Text Field ${base + 1}`, skill.rank, { fontSize: 7.5 });
     setField(form, `Text Field ${base + 2}`, skillStatText(skill, d.modText), { fontSize: 7 });
     setField(form, `Text Field ${base + 3}`, skill.check || (skill.damageStat !== undefined ? 'Evade' : ''), { fontSize: 6.5 });
-    setField(form, `Text Field ${base + 4}`, compact(notes, 180), { fontSize: 6.2, multiline: true });
+    setField(form, `Text Field ${base + 4}`, compact(withSource, 190), { fontSize: 6.2, multiline: true });
   }
 }
 
@@ -123,6 +153,91 @@ async function overflowPages(PDFDocument, font, templateBytes, rows, perPage, fi
     pages.push(extra);
   }
   return pages;
+}
+
+// Text the standard fonts can't draw (WinAnsi only) becomes something close.
+function drawable(font, text) {
+  return [...asText(text)].map((ch) => {
+    try {
+      font.encodeText(ch);
+      return ch;
+    } catch {
+      return { '\u2011': '-', '\u2010': '-', '\u2212': '-', '\u2192': '->', '\u2264': '<=', '\u2265': '>=' }[ch] || '?';
+    }
+  }).join('');
+}
+
+function wrapText(font, size, text, width) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && font.widthOfTextAtSize(next, size) > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Skills & Spells Reference: each Skill/Spell the crawler knows, with the
+// book's stat lines and every Upgrade (those reached at its Rank marked), in
+// two columns on as many pages as it takes.
+async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
+  if (!skills.length) return;
+  const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const [width, height] = [792, 612];
+  const margin = 36;
+  const gap = 24;
+  const columnWidth = (width - margin * 2 - gap) / 2;
+  const top = height - margin - 30;
+  let page = null;
+  let column = 0;
+  let y = 0;
+  const newPage = () => {
+    page = pdfDoc.addPage([width, height]);
+    page.drawText(drawable(bold, `SKILLS & SPELLS REFERENCE${state.name ? ` - ${state.name.toUpperCase()}` : ''}`), { x: margin, y: height - margin - 10, size: 12, font: bold });
+    page.drawText('Stat lines and Upgrades from the rulebook. Upgrades this crawler has reached are marked.', { x: margin, y: height - margin - 24, size: 7.5, font: regular });
+    column = 0;
+    y = top;
+  };
+  // Keep a Skill's block together where it fits in one column.
+  const place = (blockHeight) => {
+    if (!page) newPage();
+    if (y - blockHeight >= margin) return;
+    if (column === 0 && top - blockHeight >= margin) {
+      column = 1;
+      y = top;
+    } else {
+      newPage();
+    }
+  };
+  for (const skill of skills) {
+    const entry = bookText(skill.name);
+    const stat = skill.stat && skill.stat !== 'None' ? ` · ${skill.stat} ${d.modText[skill.stat] || ''}`.trimEnd() : '';
+    const rank = Number(skill.rank) || 0;
+    const rows = [[bold, 9, `${skill.label || skill.name} - Rank ${skill.rank}${stat}`, 0]];
+    for (const [key, value] of entry?.props || []) rows.push([regular, 7.5, `${key}: ${value}`, 0]);
+    if (skill.notes && !(entry?.props || []).some(([, value]) => skill.notes.includes(value))) rows.push([regular, 7.5, `Note: ${skill.notes}`, 0]);
+    if (entry?.upgrades.length) {
+      rows.push([bold, 7.5, 'Upgrades', 0]);
+      for (const [r, text] of entry.upgrades) rows.push([r <= rank ? bold : regular, 7.5, `${r <= rank ? '[Reached] ' : ''}Rank ${r}: ${text}`, 8]);
+    }
+    if (skill.source) rows.push([regular, 7, `From: ${skill.source}`, 0]);
+    const lines = rows.flatMap(([font, size, text, indent]) => wrapText(font, size, drawable(font, text), columnWidth - indent).map((line) => [font, size, line, indent]));
+    const blockHeight = lines.reduce((sum, [, size]) => sum + size + 2.5, 0) + 8;
+    place(blockHeight);
+    const x = margin + column * (columnWidth + gap);
+    for (const [font, size, line, indent] of lines) {
+      y -= size + 2.5;
+      page.drawText(line, { x: x + indent, y, size, font });
+    }
+    y -= 8;
+  }
 }
 
 export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
@@ -227,12 +342,10 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 101', state.story.regret, { fontSize: 8, multiline: true });
 
   const reviewNotes = [];
+  // A sheet can be downloaded before it's finished; it says so first.
+  const issues = errors(state);
+  if (issues.length) reviewNotes.push(`THIS SHEET STILL HAS ${issues.length} ISSUE${issues.length === 1 ? '' : 'S'}:`, ...issues.map((x) => `• ${x}`), '');
   if (state.performance && allSkills(state).some((x) => x.name === 'Performance')) reviewNotes.push(`Performance specialty: ${state.performance}`);
-  const sourceConflicts = conflicts(state);
-  for (const conflict of sourceConflicts) {
-    if (state.rulings[conflict.name]) reviewNotes.push(`${conflict.name} ruling: use ${state.rulings[conflict.name]}.`);
-  }
-  if (state.combatType === 'hand') reviewNotes.push('Paired hand-to-hand Damage Effect treated as Rank 3 per GM-approved interpretation.');
   if (d.dayNight) reviewNotes.push('Stats, Mods and Mana shown as two numbers: the first is daytime, the second is night time.');
   // Race/Class benefits that aren't fully captured by numbers on the sheet.
   for (const [label, entry] of [['Race', findRace(state.race, state)], ['Class', findClass(state.className, state)]]) {
@@ -266,6 +379,8 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     const [page] = await pdfDoc.copyPages(extra, [INVENTORY_PAGE_INDEX]);
     pdfDoc.addPage(page);
   }
+
+  await addReferencePages(pdfDoc, StandardFonts, state, skills, d);
 
   // Keep the AcroForm editable; do not flatten.
   return pdfDoc.save({ useObjectStreams: false, updateFieldAppearances: false });

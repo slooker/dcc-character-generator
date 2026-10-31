@@ -162,6 +162,11 @@ class RaceClassBenefitTests(unittest.TestCase):
     def val(self, expr: str):
         return json.loads(self.js.eval(f"JSON.stringify({expr})"))
 
+    def test_animal_crawler_needs_no_permission_checkbox(self) -> None:
+        self.js.eval("var pet = humanCrawler(); pet.kind = 'animal'; pet.species = 'Cat'; pet.size = '2';")
+        self.assertFalse(any("GM allows" in x for x in self.val("errors(pet)")))
+        self.assertTrue(self.val("stepCompletion(pet).identity"))
+
     def test_stat_changes_go_to_unenhanced_and_enhanced_matches(self) -> None:
         human = self.val("unenhancedStats(statsCrawler({ race: 'Human' }))")
         self.assertEqual(human, {"Str": 8, "Int": 7, "Con": 6, "Dex": 5, "Cha": 4})
@@ -265,6 +270,8 @@ class RaceClassUiTests(unittest.TestCase):
         self.assertIn("eligibleClasses(state)", app)
         self.assertIn("setField(form, 'class', state.className", pdf)
         self.assertIn("state.race ||", pdf)
+        # Race & Class can be skipped from the top of the step.
+        self.assertIn('data-nav="advancement">Skip Race &amp; Class</button>', app)
 
 
 if __name__ == "__main__":

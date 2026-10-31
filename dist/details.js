@@ -48,7 +48,7 @@ export const damageEffects = {
 const utility = (stat, check, page, notes) => ({ stat, check, page, notes });
 
 export const utilitySkills = {
-  Aiming: utility('None', 'Passive', 184, 'Ranged attacks only: choose Disadvantage, add Aiming Rank to the Attack Check; on Success add 1d4 damage.'),
+  Aiming: utility('Dex', 'Passive', 184, 'Ranged attacks only: choose Disadvantage, add Aiming Rank to the Attack Check; on Success add 1d4 damage.'),
   Ambush: utility('Int', 'Int-Opposed', 184, 'On Success gain a surprise Action; an unseen Attack has Advantage.'),
   'Animal Handling': utility('Cha', 'Int-Opposed', 185, 'On Success the animal is friendly enough to avoid attacking you.'),
   Catcher: utility('None', 'Passive', 187, 'Interrupt: take a direct hit for an adjacent ally; may Step 10 ft first; cannot negate the damage.'),

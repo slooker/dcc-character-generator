@@ -98,10 +98,20 @@ class ProjectStructureTests(unittest.TestCase):
         for message in (
             "Intelligence 4 or higher",
             "different Hotlist slot",
-            "paired hand-to-hand Damage Effect",
-            "printed Stat discrepancy",
         ):
             self.assertIn(message, rules)
+
+    def test_skills_use_one_stat_everywhere(self) -> None:
+        # The background tables and Skill entries print different Stats for
+        # these; the user ruled Escape Artist Dex, Performance Cha, Aiming Dex.
+        rules = (DIST / "rules.js").read_text(encoding="utf-8")
+        details = (DIST / "details.js").read_text(encoding="utf-8")
+        for wrong in ("Escape Artist:Str", "Performance:Int", "Aiming:None"):
+            self.assertNotIn(wrong, rules)
+        self.assertIn("Aiming: utility('Dex'", details)
+        self.assertIn("'Escape Artist': utility('Dex'", details)
+        self.assertNotIn("rulingsApproved", rules)
+        self.assertNotIn("handEffectApproved", rules)
 
     def test_pdf_field_map_contains_known_critical_fields(self) -> None:
         pdf_js = (DIST / "pdf.js").read_text(encoding="utf-8")

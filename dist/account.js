@@ -222,22 +222,43 @@ function googleButton(register) {
   return `<a class="google-button" href="api/auth/google/start">${GOOGLE_G}<span>${register ? 'Sign up' : 'Sign in'} with Google</span></a>`;
 }
 
-const signOutButton = '<button type="button" class="secondary account-button" data-action="sign-out">Sign out</button>';
+// Making custom Races and Classes needs a verified account. Without one the
+// button stays clickable but greyed out, and says what's needed.
+export function workshopLockedMessage() {
+  return account.user ? 'Verify your email to make custom Races and Classes.' : 'Sign in with a verified email to make custom Races and Classes.';
+}
+const lockedAttrs = () => `aria-disabled="true" data-action="workshop-locked" title="${esc(workshopLockedMessage())}"`;
+const workshopButton = () => `<button type="button" class="secondary account-button locked" ${lockedAttrs()}>Custom Races & Classes</button>`;
+export const workshopLink = (label) => (verified()
+  ? `<button type="button" class="secondary" data-nav="workshop">${label}</button>`
+  : `<button type="button" class="secondary locked" ${lockedAttrs()}>${label}</button>`);
 
-const workshopButton = '<button type="button" class="secondary account-button" data-action="workshop">Custom Races & Classes</button>';
+// Signed in, the account's pages sit in a menu under the user's name; Save
+// (or Verify email) stays beside it.
+function accountMenu(items) {
+  const name = account.user.name || account.user.email;
+  return `<details class="account-menu">
+    <summary class="secondary account-button" title="${esc(name)}"><span class="account-name">${esc(name)}</span><span class="account-caret" aria-hidden="true">▾</span></summary>
+    <div class="account-menu-items" role="menu">${items.map(([action, label]) => (action === 'workshop-locked'
+    ? `<button type="button" role="menuitem" class="locked" ${lockedAttrs()}>${label}</button>`
+    : `<button type="button" role="menuitem" data-action="${action}">${label}</button>`)).join('')}</div>
+  </details>`;
+}
 
 export function accountBar(state) {
   if (!account.available || !account.ready) return '';
-  if (!account.user) return `${workshopButton}<button type="button" class="secondary account-button" data-action="account">Sign in to save</button>`;
-  if (!verified()) return `${workshopButton}<button type="button" class="primary account-button" data-action="account">Verify email</button>${signOutButton}`;
+  if (!account.user) return `${workshopButton()}<button type="button" class="secondary account-button" data-action="account">Sign in to save</button>`;
+  const workshopItem = [verified() ? 'workshop' : 'workshop-locked', 'Custom Races & Classes'];
+  const signOutItem = ['sign-out', 'Sign out'];
+  if (!verified()) {
+    return `<button type="button" class="primary account-button" data-action="account">Verify email</button>
+      ${accountMenu([workshopItem, ['profile', 'Edit profile'], signOutItem])}`;
+  }
   const status = saveStatus(state);
   const label = { saved: 'Saved', unsaved: 'Save changes', new: 'Save crawler' }[status];
   return `
     <button type="button" class="primary account-button" data-action="save-crawler" ${status === 'saved' ? 'disabled' : ''}>${label}</button>
-    <button type="button" class="secondary account-button" data-action="account">My Crawlers <span>${slotText()}</span></button>
-    ${workshopButton}
-    <button type="button" class="secondary account-button profile-button" data-action="profile" title="Edit profile">${esc(account.user.name || account.user.email)}</button>
-    ${signOutButton}`;
+    ${accountMenu([['account', `My Crawlers <span class="account-slots">${slotText()}</span>`], workshopItem, ['profile', 'Edit profile'], signOutItem])}`;
 }
 
 function formError(kind) {

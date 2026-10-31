@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from test_pdf_export import export_fields, export_pdf
+from test_pdf_export import export_fields, export_pdf, sheet_pages
 from test_race_class import MiniRacer, load_rules
 
 # A finished human Club crawler with Str 6 / Int 5 / Con 4 / Dex 3 / Cha 2, plus helpers.
@@ -174,7 +174,7 @@ class EquipmentPdfTests(unittest.TestCase):
 
     def test_more_than_twenty_inventory_rows_adds_an_inventory_page(self) -> None:
         reader = export_pdf(PDF_CRAWLER.replace("COUNT", "24"))  # 24 rocks + gold = 25 rows
-        self.assertEqual(len(reader.pages), 5)
+        self.assertEqual(len(sheet_pages(reader)), 5)
         last = reader.pages[4].extract_text()
         self.assertIn("INVENTORY", last.upper())
         self.assertIn("Gold coins", last)
