@@ -207,6 +207,15 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn("warnIfHotlistCollision(target.value, `item:${item.id}`)", app)
         self.assertIn("target.value = state[target.dataset.bind]", app)
 
+    def test_open_goes_to_identity_with_a_banner(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        handler = app[app.index("} else if (target.dataset.openCharacter) {"):app.index("} else if (target.dataset.deleteCharacter) {")]
+        self.assertIn("if (id === linkedId()) {", handler)  # the open crawler isn't reloaded
+        self.assertEqual(handler.count("openedCrawler = true;"), 2)
+        self.assertEqual(handler.count("navigate('identity');"), 2)
+        self.assertIn("is open.</strong> Click any step in the sidebar to edit that part of the sheet", app)
+        self.assertIn("if (step !== 'identity') openedCrawler = false;", app)
+
     def test_quick_inventory_and_portrait_controls(self) -> None:
         app = (DIST / "app.js").read_text(encoding="utf-8")
         # Equipment: quick add, gold add/spend, quantity steppers, Use on potions and scrolls.

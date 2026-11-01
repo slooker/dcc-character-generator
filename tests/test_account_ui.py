@@ -152,7 +152,9 @@ class AccountUiTests(unittest.TestCase):
         page = self.val("accountView(s)")
         self.assertNotRegex(page, r'data-action="save-crawler" disabled')
         self.assertIn('data-delete-character="2"', page)
-        self.assertNotIn('data-open-character="2"', page)  # already open
+        # Every crawler has Open; the open one's is highlighted and goes back to it.
+        self.assertIn('<button type="button" class="primary" data-open-character="2" aria-label="Open Crawler 2">Open</button>', page)
+        self.assertIn('<button type="button" class="secondary" data-open-character="1" aria-label="Open Crawler 1">Open</button>', page)
 
     def test_names_are_escaped(self) -> None:
         self.js.eval("account.characters = [row(1, '<img src=x onerror=alert(1)>')];")

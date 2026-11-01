@@ -18,7 +18,7 @@ import {
 } from './equipment.js';
 import {
   account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
-  deleteCharacter, setLink, saveStatus, verified, workshopLink, workshopLockedMessage, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
+  deleteCharacter, setLink, linkedId, saveStatus, verified, workshopLink, workshopLockedMessage, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
 } from './account.js';
 import { aboutView } from './about.js';
 import { changelogView, VERSION } from './changelog.js';
@@ -104,6 +104,7 @@ function setPath(path, value) {
 }
 
 function navigate(step) {
+  if (step !== 'identity') openedCrawler = false;
   if ((step === 'workshop' || step === 'build-edit') && !verified()) {
     setNotice(workshopLockedMessage(), 5000);
     return;
@@ -302,9 +303,14 @@ function evadeText(d) {
   return `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}${dice}${d.evadeExtras.includes('Adv') ? ', with Advantage' : ''}`;
 }
 
+// Set when a saved crawler is opened from My Crawlers; Identity says so
+// until the player moves to another page.
+let openedCrawler = false;
+
 function identityStep() {
   const animal = state.kind === 'animal';
   return `
+    ${openedCrawler ? `<div class="callout success-panel opened-callout" role="status"><strong>${esc(state.name || 'Your crawler')} is open.</strong> Click any step in the sidebar to edit that part of the sheet, then Save to keep your changes in your account.</div>` : ''}
     <p class="eyebrow">STEP 1 · IDENTITY & ORIGIN</p>
     <h1>Who entered the dungeon?</h1>
     <p class="intro">Name the crawler, then choose Human or the optional earth-animal path. Your crawler number is assigned once and cannot be rerolled or edited.</p>
@@ -1532,6 +1538,12 @@ async function accountClick(event) {
     main.querySelector('input[name="email"]')?.focus();
   } else if (target.dataset.openCharacter) {
     const id = Number(target.dataset.openCharacter);
+    // Already open: go back to it, keeping any unsaved edits.
+    if (id === linkedId()) {
+      openedCrawler = true;
+      navigate('identity');
+      return true;
+    }
     const hasDraft = state.name || state.kind;
     if (hasDraft && saveStatus(state) !== 'saved' && !confirm('Open this crawler? The unsaved changes to the crawler you have open now will be lost.')) return true;
     try {
@@ -1539,7 +1551,7 @@ async function accountClick(event) {
       setLink(id, state);
       activeBackgroundStage = 0;
       saveState();
-      setNotice(`Opened ${state.name || 'crawler'}.`);
+      openedCrawler = true;
       navigate('identity');
     } catch (error) {
       setNotice(error.message, 6000);

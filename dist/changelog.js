@@ -3,6 +3,15 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.11',
+    date: '2026-11-01',
+    title: 'Opening saved crawlers',
+    items: [
+      'Every crawler in My Crawlers has an Open button, including the one already open',
+      'Opening a crawler takes you to Identity with a note that it’s open and every step can be edited from the sidebar',
+    ],
+  },
+  {
     version: '0.10',
     date: '2026-11-01',
     title: 'Custom Race abilities on the sheet, quick inventory and portraits',

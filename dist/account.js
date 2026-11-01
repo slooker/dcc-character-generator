@@ -324,7 +324,7 @@ function characterRow(character, currentId) {
   return `<li class="crawler-row ${current ? 'current' : ''}">
     <div><strong>${esc(character.name)}</strong>${current ? ' <span class="tag">OPEN</span>' : ''}<br><span class="muted micro">${character.number ? `#${esc(character.number)} · ` : ''}${esc(details)} · saved ${esc(updated)}</span></div>
     <div class="crawler-actions">
-      ${current ? '' : `<button type="button" class="secondary" data-open-character="${character.id}">Open</button>`}
+      <button type="button" class="${current ? 'primary' : 'secondary'}" data-open-character="${character.id}" aria-label="Open ${esc(character.name)}">Open</button>
       <button type="button" class="secondary danger-button" data-delete-character="${character.id}" aria-label="Delete ${esc(character.name)}">Delete</button>
     </div>
   </li>`;
