@@ -2,6 +2,10 @@
 
 Static, browser-based first draft of a character creator for the Dungeon Crawler Carl Roleplaying Game.
 
+## Changelog
+
+`dist/changelog.js` has one entry per commit on `main`: version 0.N for the Nth commit, with its date and what changed. Add an entry with every commit; `tests/test_changelog.py` fails if it falls behind. The page is linked from the footer.
+
 ## Source boundary
 
 Game mechanics in this project are intentionally limited to the supplied files:
@@ -43,7 +47,7 @@ The only automatic random value is the crawler number, generated once per new cr
 
 The flow covers:
 
-1. Identity and Human/optional earth-animal origin.
+1. Identity and Human/optional earth-animal origin, with an optional portrait (JPEG/PNG/WebP/GIF under 2 MB, shrunk in the browser to a small JPEG for the sheet's Portrait box).
 2. Four background stages and exactly two player-selected Skills from each chosen background.
 3. Starting combat Skill plus a player-selected weapon, attack Spell, or hand-to-hand option.
 4. Player-assigned Standard Array (2, 3, 4, 5, 6) with duplicate/missing-value validation and automatic derived values.
@@ -53,7 +57,7 @@ The flow covers:
 8. Player choice of which learned attacks appear in the sheet's five front-page attack rows.
 9. Race & Class: only the Races and Classes whose prerequisites the crawler meets are listed (Earth Classes need an Earth Race; Skill Rank, Popularity, achievement, club, deity and female-only limits are checked). Stat changes go to Unenhanced Stats (Enhanced equals Unenhanced until equipment adds bonuses). Skill and Spell bonuses add Ranks immediately, a new Skill/Spell is gained at the bonus Rank, and totals cap at Rank 10 during selection. "Of your choice" picks and Stat splits are made in the step. DR is listed per source in the sheet's Buffs box; Size and Move are applied; situational benefits go to the sheet notes.
 10. Level & Skills: 3 Stat points per level and a floor-stamped Skill & Spell log.
-11. Equipment (dcc-gear.pdf pp. 98-99): items found later, with gold and Misc. Junk. Gear Slots hold one item each (Head, Torso, Arms, gloves, Legs, Feet), two hands for Holding (Two-Handed weapons use both), and up to 10 Accessories (one belt, one cape); starting clothing and possessions count too. Only equipped items apply their player-entered bonuses: Stat bonuses raise Enhanced Stats only, Skill bonuses add Ranks while equipped (not counted for prerequisites), and DR goes in the sheet's Armor box. Scrolls are named "Scroll of <Spell> (Rank N)"; reading a spellbook logs its Spell in the Skill & Spell log; potions can be used up. More than 20 Inventory rows add an extra Inventory page.
+11. Equipment (dcc-gear.pdf pp. 98-99): items found later, with gold and Misc. Junk. Gear Slots hold one item each (Head, Torso, Arms, gloves, Legs, Feet), two hands for Holding (Two-Handed weapons use both), and up to 10 Accessories (one belt, one cape); starting clothing and possessions count too. Only equipped items apply their player-entered bonuses: Stat bonuses raise Enhanced Stats only, Skill bonuses add Ranks while equipped (not counted for prerequisites), and DR goes in the sheet's Armor box. Scrolls are named "Scroll of <Spell> (Rank N)"; reading a spellbook logs its Spell in the Skill & Spell log; potions can be used up. More than 20 Inventory rows add an extra Inventory page. For use at the table, a quick-add bar adds an Item, Potion, Scroll or Spellbook in one line (Custom… opens the full editor for magic gear with bonuses), gold can be added or spent, and each item has quantity buttons (and Use for potions and scrolls); its full editor opens with Edit.
 12. Validation and filled PDF download (a sheet with unresolved issues can still be downloaded; its notes list them). Where the background tables and Skill entries print different Stats, the user ruled Escape Artist Dex, Performance Cha and Aiming Dex.
 
 The exported PDF preserves the original four-page fillable AcroForm rather than replacing or flattening it. Starting exported sheets default **Level** to `1` and **Floor** to `1`.

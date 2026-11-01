@@ -36,6 +36,8 @@ export const DESCRIPTION_MAX = 1000;
 export const STATS = ['Str', 'Int', 'Con', 'Dex', 'Cha'];
 export const STAT_NAMES = { Str: 'Strength', Int: 'Intelligence', Con: 'Constitution', Dex: 'Dexterity', Cha: 'Charisma' };
 export const CLUBS = ['Desperado Club', 'Club Vanquisher'];
+// What "Add 1d4 to your Evade or Stat Checks for a specific Stat" applies to.
+export const CHECKS = ['Evade', ...STATS];
 export const CLASS_TYPES = [...new Set(classes.flatMap((x) => x.classTypes || []))].sort();
 
 export const TIERS = [
@@ -67,11 +69,21 @@ const rowAmount = (row, option) => (option?.fields?.includes('stats') ? statTota
 const withDetail = (text, row) => (String(row.detail || '').trim() ? `${text}: ${String(row.detail).trim()}` : text);
 
 // Fields a row can use: stat, stats, amount, skill, skills, detail, club, tier,
-// text. `per` options cost their tier once per `amount`; for `stats` rows
+// text, check. `per` options cost their tier once per `amount`; for `stats` rows
 // (several Stats in one row, { Str: 2, Dex: 1 }) that's the total. Text-only options keep the
 // book's wording; their effects are situational and go in the sheet's notes.
+//
+// `short` is the wording for the sheet, where space is tight: a string (with
+// the row's details after a colon) or a function of the details.
 function described(tier, id, label, extra = {}) {
   return { id, tier, label, fields: ['detail'], text: (row) => withDetail(label, row), ...extra };
+}
+
+export function shortText(option, row) {
+  const detail = String(row.detail || '').trim();
+  if (typeof option.short === 'function') return option.short(detail, row);
+  if (option.short) return detail ? `${option.short}: ${detail}` : option.short;
+  return detail || option.text(row);
 }
 
 export const BENEFITS = [
@@ -81,13 +93,13 @@ export const BENEFITS = [
   { id: 'rank20', tier: 'minor', label: 'Allow a specific Skill to be raised to Rank 20', fields: ['skill'],
     text: (row) => `${canonical(row.skill)} ${skillWord(row.skill)} can be raised to Rank 20`,
     effects: (row) => [{ type: 'rankLimit', max: 20, skills: [canonical(row.skill)] }] },
-  described('minor', 'club', 'Membership in Club Desperado or Club Vanquisher'),
+  described('minor', 'club', 'Membership in Club Desperado or Club Vanquisher', { short: 'Club membership' }),
   described('minor', 'advancementSkill', 'At the end of each floor, add 1 to your Skill Advancement Checks for a particular Skill'),
   described('minor', 'modTwiceSkill', 'Add your Stat Mod a second time when using a specific non-combat Skill in a common circumstance'),
   described('minor', 'conditional', 'A benefit that has a condition, such as gaining Advantage when attacking stone creatures'),
-  described('minor', 'darkvision', 'Can see in total darkness or has a natural ability to produce light'),
+  described('minor', 'darkvision', 'Can see in total darkness or has a natural ability to produce light', { short: 'Sees in the dark or makes light' }),
   described('minor', 'manaEnvironment', 'Double Mana regeneration from mending and resting in a specific environment'),
-  described('minor', 'farSight', 'You can see twice as far as most creatures'),
+  described('minor', 'farSight', 'You can see twice as far as most creatures', { short: 'Sees twice as far as most creatures' }),
   described('minor', 'craftingTable', 'A tier-1 crafting table (as soon as you acquire a personal space, it shows up there)'),
   described('minor', 'saferoom', 'A free room in saferooms'),
   described('minor', 'discount', 'Discount at stores, bonus earned from sales or interest earned'),
@@ -110,22 +122,22 @@ export const BENEFITS = [
   described('moderate', 'advantageAdvancement', 'Roll with Advantage when making Skill Advancement Checks for a particular Skill'),
   described('moderate', 'advancementGroup', 'At the end of each floor, add 1 to your Skill Advancement Checks for a particular group of thematically linked Skills'),
   described('moderate', 'damageType', 'At the start of combat, you can change your damage to a different type for that combat'),
-  described('moderate', 'guild', 'Can access any guild of a particular type'),
+  described('moderate', 'guild', 'Can access any guild of a particular type', { short: 'Guild access' }),
   described('moderate', 'manaAnywhere', 'Double Mana regeneration from mending and resting without a limit'),
   described('moderate', 'allClubs', 'Membership in all professional and social clubs'),
   described('moderate', 'bookClub', 'Membership in the Dungeon Book of the Floor Club'),
   described('moderate', 'gold', 'Mobs drop 1 × Floor Number gold when you kill them with a specific attack'),
   described('moderate', 'popularity', 'Ability to gain Popularity with specific actions and attacks'),
-  described('moderate', 'patron', 'Patron Benefit'),
-  described('moderate', 'resistUncommon', 'Resistance to an uncommon damage type (Force, Psychic, Necrotic, etc.)'),
-  described('moderate', 'resistEnvironment', 'Resistance to damage dealt by the environment (Falling, Drowning, dungeon traps, etc.)'),
+  described('moderate', 'patron', 'Patron Benefit', { short: 'Patron' }),
+  described('moderate', 'resistUncommon', 'Resistance to an uncommon damage type (Force, Psychic, Necrotic, etc.)', { short: 'Resistance' }),
+  described('moderate', 'resistEnvironment', 'Resistance to damage dealt by the environment (Falling, Drowning, dungeon traps, etc.)', { short: 'Resists environmental damage' }),
   described('moderate', 'replaceStat', 'Replace a Stat used in an ability with another Stat'),
   described('moderate', 'extraMod', 'A Stat Mod from another ability can be used in addition to the normal Mod for specific Skills'),
   described('moderate', 'crossWeapon', 'Can use Skills designed for one type of weapon on another type of weapon'),
   described('moderate', 'healingBonus', 'When you use a Healing-type Spell, the target heals 1 additional Health Bar'),
-  described('moderate', 'terrain', 'Traverse certain terrain types without Skill Checks'),
-  described('moderate', 'burrow', 'The ability to burrow'),
-  described('moderate', 'waterBreathing', 'The ability to breathe underwater'),
+  described('moderate', 'terrain', 'Traverse certain terrain types without Skill Checks', { short: 'Crosses terrain without Skill Checks' }),
+  described('moderate', 'burrow', 'The ability to burrow', { short: 'Can burrow' }),
+  described('moderate', 'waterBreathing', 'The ability to breathe underwater', { short: 'Breathes underwater' }),
   described('moderate', 'tempSkills', '+1 in all Skills for a temporary duration that’s an hour or less'),
   described('moderate', 'naturalD6', 'A natural attack at Rank = Floor Number that deals 1d6 + Stat Mod damage (another d6 at Rank 5, 10 and 15)'),
   described('moderate', 'reassignStats', 'Reassign this Race or Class’s Stat point benefits once per floor during a Long Rest'),
@@ -139,21 +151,28 @@ export const BENEFITS = [
   { id: 'small', tier: 'major', label: 'Size 2 (Small) or less', kinds: ['race'], fields: [],
     text: () => 'Size: Small (2)',
     effects: () => [{ type: 'size', value: 'Small (2)' }] },
+  // Not in the book's menu, which only offers Small; Table 21 goes up to Large (5).
+  { id: 'large', tier: null, label: 'Size 5 (Large) — not in the book’s menu; agree its tier with your GM', kinds: ['race'], fields: ['tier'],
+    text: () => 'Size: Large (5)',
+    effects: () => [{ type: 'size', value: 'Large (5)' }] },
   described('major', 'assistance', 'Access to significant assistance, akin to the Manager benefit'),
-  described('major', 'pet', 'Gain a friendly Pet or a Mount'),
+  described('major', 'pet', 'Gain a friendly Pet or a Mount', { short: 'Pet or Mount' }),
   described('major', 'petBuff', 'Provide a significant Buff or Benefit up to 4 Points to all of your Pets or Mounts'),
   described('major', 'alterEncounter', 'Dramatically alter an encounter once a day, such as by making enemies attack each other'),
   described('major', 'dailyDefense', 'A defensive ability usable once per day, such as negating all damage you take from a single attack'),
   described('major', 'partyBuff', 'Buff the entire party once per day, such as granting them regeneration or extra DR'),
-  described('major', 'flyLimited', 'The ability to fly, with some limitations'),
-  described('major', 'noBreathing', 'Survive without breathing, with Immunity to inhaled toxins'),
-  described('major', 'rage', 'Rage (Benefit): Your melee attacks deal +1 damage for each Health Bar slot you have lost', { fields: [] }),
-  described('major', 'd4Checks', 'Add 1d4 to your Evade or Stat Checks for a specific Stat'),
+  described('major', 'flyLimited', 'The ability to fly, with some limitations', { short: (d) => (d ? `Flies (${d})` : 'Flies, with some limitations') }),
+  described('major', 'noBreathing', 'Survive without breathing, with Immunity to inhaled toxins', { short: 'Doesn’t need to breathe; immune to inhaled toxins' }),
+  described('major', 'rage', 'Rage (Benefit): Your melee attacks deal +1 damage for each Health Bar slot you have lost', { fields: [], short: 'Rage: +1 melee damage per lost Health Bar slot' }),
+  { id: 'd4Checks', tier: 'major', label: 'Add 1d4 to your Evade or Stat Checks for a specific Stat', fields: ['check'],
+    text: (row) => `Add 1d4 to ${row.check === 'Evade' ? 'Evade' : `${STAT_NAMES[row.check]} Stat`} Checks`,
+    short: (_, row) => `+1d4 to ${row.check === 'Evade' ? 'Evade' : `${STAT_NAMES[row.check]} Stat`} Checks`,
+    effects: (row) => (row.check === 'Evade' ? [{ type: 'evade', text: '+1d4' }] : []) },
   described('major', 'naturalD8', 'A natural attack at Rank = Floor Number that deals 1d8 + Stat Mod damage (another d8 at Rank 5, 10 and 15)'),
-  described('major', 'advantageSkill', 'Advantage when using a specific non-combat Skill or Spell'),
+  described('major', 'advantageSkill', 'Advantage when using a specific non-combat Skill or Spell', { short: (d) => (d ? `Advantage on ${d}` : 'Advantage on a non-combat Skill') }),
   described('major', 'doubleDamage', 'Situational bonus of up to ×2 damage for one round'),
   described('major', 'swapCon', 'Swap Con for determining Health Bar values with another Stat'),
-  described('major', 'climb', 'A Climb Movement: automatically climb most surfaces, even ceilings', { fields: [] }),
+  described('major', 'climb', 'A Climb Movement: automatically climb most surfaces, even ceilings', { fields: [], short: 'Climb Movement: climbs most surfaces, even ceilings' }),
 
   { id: 'unlearnable', tier: 'extreme', label: '+1 in a Skill that you wouldn’t normally be able to learn', per: true, fields: ['skill', 'amount'],
     text: (row) => `${signed(row.amount)} ${canonical(row.skill)} Skill`,
@@ -164,12 +183,12 @@ export const BENEFITS = [
   { id: 'rank20Group6', tier: 'extreme', label: 'All Skills in a thematically linked group of up to 6 Skills can be raised to Rank 20', fields: ['detail', 'skills'], group: [1, 6],
     text: (row) => `${groupName(row)} Skills (${joinNames(row.skills.map(canonical))}) can be raised to Rank 20`,
     effects: (row) => [{ type: 'rankLimit', max: 20, skills: row.skills.map(canonical) }] },
-  described('extreme', 'advantageStat', 'Advantage on all Stat Checks for a specific Stat'),
-  described('extreme', 'poisonImmunity', 'Immunity to Poison', { fields: [] }),
-  described('extreme', 'resistCommon', 'Resistance to a common damage type (Bludgeoning, Fire)'),
-  described('extreme', 'spellDuration', 'Double the duration of your Rank 5 and lower Spells that have a duration', { fields: [] }),
+  described('extreme', 'advantageStat', 'Advantage on all Stat Checks for a specific Stat', { short: (d) => (d ? `Advantage on ${d} Stat Checks` : 'Advantage on Stat Checks for one Stat') }),
+  described('extreme', 'poisonImmunity', 'Immunity to Poison', { fields: [], short: 'Immune to Poison' }),
+  described('extreme', 'resistCommon', 'Resistance to a common damage type (Bludgeoning, Fire)', { short: 'Resistance' }),
+  described('extreme', 'spellDuration', 'Double the duration of your Rank 5 and lower Spells that have a duration', { fields: [], short: 'Double duration for Rank 5 and lower Spells' }),
   described('extreme', 'advantageSituation', 'Advantage on all Skills in a limited non-combat situation'),
-  described('extreme', 'arm', 'Additional functional arm', { fields: [] }),
+  described('extreme', 'arm', 'Additional functional arm', { fields: [], short: 'An extra functional arm' }),
   described('extreme', 'doppelganger', 'Doppelgänger shape-changing', { fields: [] }),
 
   { id: 'groupLarge', tier: 'epic', label: '+1 to all Skills in a thematically linked group of 6+ Skills', per: true, fields: ['detail', 'skills', 'amount'], group: [6, Infinity],
@@ -178,14 +197,15 @@ export const BENEFITS = [
   { id: 'rank20All', tier: 'epic', label: 'All Skills can be raised to Rank 20', fields: [],
     text: () => 'All Skills can be raised to Rank 20',
     effects: () => [{ type: 'rankLimit', max: 20, all: true, skills: [] }] },
-  described('epic', 'majorDefense', 'A significant defensive ability, such as Immunity to a common damage type or Advantage on Evade Checks'),
+  described('epic', 'majorDefense', 'A significant defensive ability, such as Immunity to a common damage type or Advantage on Evade Checks', {
+    effects: (row) => (/\badvantage\b.*\bevade\b|\bevade\b.*\badvantage\b/i.test(row.detail) ? [{ type: 'evade', text: 'Adv' }] : []) }),
   described('epic', 'limbRegeneration', 'The Limb Regeneration Benefit', { fields: [] }),
   described('epic', 'advantageWide', 'Roll with Advantage on all Skills in a wide-ranging set of circumstances'),
-  described('epic', 'diseaseImmunity', 'Immunity to Poison and all diseases', { fields: [] }),
+  described('epic', 'diseaseImmunity', 'Immunity to Poison and all diseases', { fields: [], short: 'Immune to Poison and all diseases' }),
   described('epic', 'flexible', 'A powerful and flexible ability that can significantly change your Stats or Skills'),
   described('epic', 'changeling', 'Changeling shapeshifting', { fields: [] }),
-  described('epic', 'advantageStatSkills', 'Roll with Advantage on all Skill Checks for a specific Stat'),
-  described('epic', 'fly', 'The ability to fly with no limitations', { fields: [] }),
+  described('epic', 'advantageStatSkills', 'Roll with Advantage on all Skill Checks for a specific Stat', { short: (d) => (d ? `Advantage on all ${d} Skill Checks` : 'Advantage on Skill Checks for one Stat') }),
+  described('epic', 'fly', 'The ability to fly with no limitations', { fields: [], short: 'Flies, with no limitations' }),
 
   { id: 'custom', tier: null, label: 'Your own benefit (agree its tier with your GM)', fields: ['tier', 'text'],
     text: (row) => String(row.text || '').trim() },
@@ -214,7 +234,7 @@ export const DETRIMENTS = [
   described('minor', 'manaUnfavored', '+1 Mana cost to cast spells not favored by your Class'),
   described('minor', 'conditionalDisadvantage', 'Disadvantage when using a thematically linked group of Skills, when there is a condition'),
   described('minor', 'advancementPenalty', '−1 penalty to Skill Advancement Checks for a specific Skill provided by your Race or Class at Rank 5+'),
-  described('minor', 'vulnerableUncommon', 'Vulnerability: An uncommon damage type deals double damage to you'),
+  described('minor', 'vulnerableUncommon', 'Vulnerability: An uncommon damage type deals double damage to you', { short: 'Vulnerable (double damage)' }),
   described('minor', 'halveEffects', 'You halve the effects of a broad type of damage that isn’t the focus of your Class'),
   described('minor', 'twoConditionWeakness', 'A weakness that has two conditions'),
   described('minor', 'delay', 'A bonus is delayed to after Level 50 or activates on the 6th Floor'),
@@ -228,7 +248,7 @@ export const DETRIMENTS = [
   { id: 'statCap', tier: 'major', label: 'A specific Stat is capped at 10', fields: ['stat'],
     text: (row) => `${STAT_NAMES[row.stat]} is capped at 10. Even magic gear and potions cannot exceed this limit`,
     effects: (row) => [{ type: 'statCap', stat: row.stat, max: 10, strict: true }] },
-  described('major', 'vulnerableCommon', 'Vulnerability: A common damage type (such as Bludgeoning or Piercing) deals double damage to you'),
+  described('major', 'vulnerableCommon', 'Vulnerability: A common damage type (such as Bludgeoning or Piercing) deals double damage to you', { short: 'Vulnerable (double damage)' }),
   { id: 'custom', tier: null, label: 'Your own detriment (agree its tier with your GM)', fields: ['tier', 'text'],
     text: (row) => String(row.text || '').trim() },
 ];
@@ -256,7 +276,7 @@ const toInt = (value, fallback = 0) => {
 };
 
 export function newRow(option = 'stat') {
-  return { option, stat: 'Str', stats: {}, amount: 1, skill: '', skills: [], detail: '', club: CLUBS[0], tier: 'minor', text: '' };
+  return { option, stat: 'Str', stats: {}, amount: 1, skill: '', skills: [], detail: '', club: CLUBS[0], tier: option === 'large' ? 'major' : 'minor', text: '', check: 'Evade' };
 }
 
 export function newBuild(kind = 'race') {
@@ -283,7 +303,14 @@ function normalizeRow(raw) {
     club: CLUBS.includes(row.club) ? row.club : CLUBS[0],
     tier: TIERS.some(([id]) => id === row.tier) ? row.tier : 'minor',
     text: clip(row.text, TEXT_MAX),
+    check: CHECKS.includes(raw?.check) ? raw.check : legacyCheck(row.detail),
   };
+}
+
+// d4Checks rows saved before they had a choice named it in their details.
+function legacyCheck(detail) {
+  const text = String(detail || '');
+  return /evade/i.test(text) ? 'Evade' : STATS.find((s) => new RegExp(`\\b(${s}|${STAT_NAMES[s]})\\b`, 'i').test(text)) || 'Evade';
 }
 
 export function normalizeBuild(raw) {
@@ -410,7 +437,13 @@ export function buildErrors(build) {
       .reduce((sum, x) => sum + Math.max(0, toInt(x.amount)), 0);
     if (passive > PASSIVE_RANK_LIMIT) out.push(`A Class build can have at most ${PASSIVE_RANK_LIMIT} points of Passive Skills (this one has ${passive}).`);
   }
-  if (build.kind === 'race' && build.benefits.filter((x) => x.option === 'small').length > 1) out.push('Size 2 (Small) only needs to be taken once.');
+  if (build.kind === 'race') {
+    const small = build.benefits.filter((x) => x.option === 'small').length;
+    const large = build.benefits.filter((x) => x.option === 'large').length;
+    if (small > 1) out.push('Size 2 (Small) only needs to be taken once.');
+    if (large > 1) out.push('Size 5 (Large) only needs to be taken once.');
+    if (small && large) out.push('A Race can’t be both Small and Large.');
+  }
   const worship = new Set(build.detriments.map((x) => x.option).filter((x) => x === 'mustWorship' || x === 'cannotWorship'));
   if (worship.size > 1) out.push('A build can’t both require and forbid worshipping a deity.');
   if (String(build.description || '').length > DESCRIPTION_MAX) out.push(`Keep the description under ${DESCRIPTION_MAX} characters.`);
@@ -430,20 +463,22 @@ export function buildEntry(raw, meta = {}) {
   const build = normalizeBuild(raw);
   const benefits = [];
   const effects = [];
+  const short = [];
   const requires = [];
-  const push = (textValue, list = []) => {
+  const push = (textValue, list = [], shortValue = textValue) => {
     if (!textValue) return;
     benefits.push(textValue);
     effects.push(list);
+    short.push(shortValue || textValue);
   };
-  if (build.kind === 'race' && !build.benefits.some((x) => x.option === 'small')) push('Size: Medium (4)', [{ type: 'size', value: 'Medium (4)' }]);
+  if (build.kind === 'race' && !build.benefits.some((x) => x.option === 'small' || x.option === 'large')) push('Size: Medium (4)', [{ type: 'size', value: 'Medium (4)' }]);
   if (build.kind === 'class' && build.earth) requires.push({ type: 'earthRace' });
   const add = (rows, find) => rows.forEach((row) => {
     const option = find(row.option);
     if (!option) return;
     const amount = Math.max(1, toInt(row.amount, 1));
     const ready = { ...row, amount };
-    push(option.text(ready), option.effects ? option.effects(ready) : []);
+    push(option.text(ready), option.effects ? option.effects(ready) : [], shortText(option, ready));
     if (option.requires) requires.push(...option.requires(ready));
   });
   add(build.benefits, benefitOption);
@@ -459,6 +494,7 @@ export function buildEntry(raw, meta = {}) {
     prerequisite: requires.length ? `Requires ${requires.map((x) => REQUIREMENT_TEXT[x.type](x)).join('; ')}` : '',
     benefits,
     effects,
+    short,
     cannotWorship: build.kind === 'race' && build.detriments.some((x) => x.option === 'cannotWorship'),
     ...(build.kind === 'class' ? { classTypes: build.classTypes } : {}),
     description: build.description,

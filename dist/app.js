@@ -6,6 +6,7 @@ import {
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
   skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
+  PORTRAIT_MAX_UPLOAD, PORTRAIT_MAX_CHARS,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
 import { buildEntry } from './builds.js';
@@ -20,6 +21,7 @@ import {
   deleteCharacter, setLink, saveStatus, verified, workshopLink, workshopLockedMessage, canStartNewCrawler, submitAccountForm, accountAction, isAccountForm, isAccountAction,
 } from './account.js';
 import { aboutView } from './about.js';
+import { changelogView, VERSION } from './changelog.js';
 import { workshop, loadWorkshop, workshopView, buildEditorView, workshopClick, workshopChange, workshopInput, snapshot } from './workshop.js';
 
 const STORAGE_KEY = 'dcc-crawler-builder-v1';
@@ -106,7 +108,7 @@ function navigate(step) {
     setNotice(workshopLockedMessage(), 5000);
     return;
   }
-  if (step === 'account' || step === 'profile' || step === 'workshop' || step === 'build-edit' || step === 'about') {
+  if (step === 'account' || step === 'profile' || step === 'workshop' || step === 'build-edit' || step === 'about' || step === 'changelog') {
     if (step === 'build-edit' && !workshop.draft) step = 'workshop';
     activeStep = step;
     render();
@@ -281,7 +283,7 @@ function renderSummary() {
     <dl>
       <div><dt>Health</dt><dd>${d.health ?? '—'}</dd></div>
       <div><dt>Mana</dt><dd>${d.manaText ?? d.maxMana ?? '—'}</dd></div>
-      <div><dt>Evade</dt><dd>${d.evadeDex ? `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}` : '—'}</dd></div>
+      <div><dt>Evade</dt><dd>${d.evadeDex ? evadeText(d) : '—'}</dd></div>
       <div><dt>Move / Step</dt><dd>${d.move} / ${d.step} ft</dd></div>
       <div><dt>AI Favor</dt><dd>${d.aiFavor ?? '—'}</dd></div>
       <div><dt>Size</dt><dd>${esc(d.size || '—')}</dd></div>
@@ -292,6 +294,12 @@ function renderSummary() {
     <div class="meter ${completedCount === totalSteps ? 'ready' : ''}">${Array.from({ length: totalSteps }, (_, i) => `<i class="${i < completedCount ? 'filled' : ''}"></i>`).join('')}</div>
     ${state.combat ? `<span class="tag">${esc(state.combat)}</span>` : ''}
   `;
+}
+
+// "d20 + 2 + 1 + 1d4, with Advantage"
+function evadeText(d) {
+  const dice = d.evadeExtras.includes('+1d4') ? ' + 1d4' : '';
+  return `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}${dice}${d.evadeExtras.includes('Adv') ? ', with Advantage' : ''}`;
 }
 
 function identityStep() {
@@ -307,6 +315,17 @@ function identityStep() {
         <label class="field"><span class="field-label">Gender / pronouns <span class="optional">optional</span></span><input data-bind="pronouns" value="${esc(state.pronouns)}" maxlength="50" autocomplete="off"><small>The rules explicitly allow this to be left blank.</small></label>
       </div>
       <label class="field">Assigned crawler number<input value="${esc(state.number)}" readonly aria-readonly="true"><small>Automatically generated once: 50,000-12,900,000. Starting a completely new crawler generates a new number.</small></label>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Portrait <span class="optional">optional</span></h2></div>
+      <div class="portrait-box">
+        <div class="portrait-preview">${state.portrait ? `<img src="${esc(state.portrait)}" alt="Portrait of ${esc(state.name || 'your crawler')}">` : 'No portrait'}</div>
+        <div class="portrait-actions">
+          <label class="field"><span class="field-label">${state.portrait ? 'Replace the portrait' : 'Add a portrait'}</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-portrait></label>
+          ${state.portrait ? '<button type="button" class="secondary small" data-portrait-remove>Remove portrait</button>' : ''}
+          <small class="muted">JPEG, PNG, WebP or GIF up to ${PORTRAIT_MAX_UPLOAD / 1024 / 1024} MB. It's shrunk to fit the sheet's Portrait box.</small>
+        </div>
+      </div>
     </section>
     <section class="panel">
       <div class="panel-head"><h2>Origin</h2>${sourceRef('p. 102')}</div>
@@ -439,7 +458,7 @@ function statsStep() {
       <div class="derived-grid">
         <div><small>Health</small><strong>${d.health ?? '—'}</strong><span>CON Mod × 10</span></div>
         <div><small>Max Mana</small><strong>${d.maxMana ?? '—'}</strong><span>Enhanced INT score</span></div>
-        <div><small>Evade</small><strong>${d.evadeDex ? `d20 + ${d.evadeDex}${d.evadeBuff ? ` + ${d.evadeBuff}` : ''}` : '—'}</strong><span>DEX Mod${d.evadeBuff ? ' + Dodge' : ''}</span></div>
+        <div><small>Evade</small><strong>${d.evadeDex ? evadeText(d) : '—'}</strong><span>DEX Mod${d.evadeBuff ? ' + Dodge' : ''}${d.evadeExtras.length ? ' + Race/Class' : ''}</span></div>
         <div><small>Move / Step</small><strong>20 / 10</strong><span>feet</span></div>
       </div>
     </section>
@@ -839,6 +858,48 @@ function gearLocationOptions(item) {
     <optgroup label="Not equipped (no bonuses)"><option value="inventory" ${item.location === 'inventory' ? 'selected' : ''}>Inventory</option>${hot.join('')}</optgroup>`;
 }
 
+// Gear items open for editing (this page view only).
+const openGear = new Set();
+// The quick-add bar: what's typed so far, kept when the type changes. Its
+// kind is an ITEM_KINDS kind or 'custom' (the full editor, for magic gear).
+const quickGear = { kind: 'item', location: 'inventory', name: '', qty: '1', spell: '', rank: '' };
+const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom…']];
+
+function quickAddPanel() {
+  const where = gearLocationOptions({ id: 'quick-add', location: quickGear.location });
+  const spellItem = quickGear.kind === 'scroll' || quickGear.kind === 'spellbook';
+  const field = (label, html, cls = '') => `<label class="field ${cls}"><span class="field-label">${label}</span>${html}</label>`;
+  const what = spellItem
+    ? field('Spell', `<select name="spell" required><option value="">Choose a Spell</option>${spellNames.map((name) => `<option ${quickGear.spell === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>`, 'quick-name')
+      + field('Rank', `<input name="rank" type="number" min="1" max="20" step="1" value="${esc(quickGear.rank)}" required>`, 'quick-qty')
+    : field(quickGear.kind === 'custom' ? 'Name <span class="optional">or name it in the editor</span>' : 'Name',
+      `<input name="name" maxlength="80" value="${esc(quickGear.name)}" placeholder="${quickGear.kind === 'potion' ? 'e.g. Healing Potion' : quickGear.kind === 'custom' ? 'e.g. Enchanted Toe Ring' : 'e.g. 50 feet of rope'}" ${quickGear.kind === 'custom' ? '' : 'required'}>`, 'quick-name');
+  return `<form class="quick-add" data-quick-gear autocomplete="off">
+      ${field('Add', `<select name="kind" data-quick-kind>${QUICK_KINDS.map(([kind, label]) => `<option value="${kind}" ${quickGear.kind === kind ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
+      ${what}
+      ${field('Qty', `<input name="qty" type="number" min="1" step="1" value="${esc(quickGear.qty)}">`, 'quick-qty')}
+      ${field('Where', `<select name="location">${where}</select>`)}
+      <button class="primary">${quickGear.kind === 'custom' ? 'Add and edit' : 'Add'}</button>
+    </form>
+    ${quickGear.kind === 'custom' ? '<p class="muted micro">Custom opens the full editor: description, and Stat, Skill and DR bonuses that apply while it’s equipped.</p>' : ''}`;
+}
+
+// Keep what's typed in the quick-add bar.
+function readQuickGear(form) {
+  const data = new FormData(form);
+  for (const key of ['kind', 'location', 'name', 'qty', 'spell', 'rank']) if (data.has(key)) quickGear[key] = String(data.get(key));
+  if (!QUICK_KINDS.some(([kind]) => kind === quickGear.kind)) quickGear.kind = 'item';
+}
+
+function quickGoldPanel() {
+  return `<form class="quick-add quick-gold" data-quick-gold autocomplete="off">
+      <label class="field quick-qty"><span class="field-label">Gold</span><input name="amount" type="number" min="1" step="1" placeholder="0" required></label>
+      <button class="secondary" name="op" value="add">Add gold</button>
+      <button class="secondary" name="op" value="spend">Spend gold</button>
+      <span class="muted">You have <strong>${esc(Number(state.gold) || 0)}</strong> gold.</span>
+    </form>`;
+}
+
 function gearCard(item, i) {
   const spellItem = item.kind === 'scroll' || item.kind === 'spellbook';
   const equipped = isEquipped(item.location);
@@ -850,17 +911,31 @@ function gearCard(item, i) {
       + field('Rank', `<input type="number" min="1" max="20" step="1" data-bind="gear.${i}.rank" data-rerender="true" value="${esc(item.rank)}">`)
     : field('Name', `<input data-bind="gear.${i}.name" value="${esc(item.name)}" maxlength="80" placeholder="${item.kind === 'potion' ? 'e.g. Healing Potion' : 'e.g. Enchanted Toe Ring'}">`, 'gear-wide');
   const stats = item.bonuses.stats;
+  const id = esc(item.id);
+  const label = gearName(item) || `New ${KIND_LABELS[item.kind].toLowerCase()}`;
+  const open = openGear.has(item.id) || !gearName(item);
+  const qty = Number(item.qty) || 1;
+  const head = `<div class="gear-row">
+      <div class="gear-row-name"><strong>${esc(label)}</strong> <span class="tag">${esc(KIND_LABELS[item.kind])}</span>
+        ${bonus ? `<span class="muted micro">${esc(bonus)}${equipped ? '' : ' (not equipped)'}</span>` : ''}</div>
+      <div class="qty-stepper" role="group" aria-label="Quantity of ${esc(label)}">
+        <button type="button" class="secondary small" data-gear-qty="${id}:-1" ${qty <= 1 ? 'disabled' : ''} aria-label="One fewer">−</button>
+        <input type="number" min="1" step="1" data-bind="gear.${i}.qty" data-rerender="true" value="${esc(item.qty)}" aria-label="Quantity">
+        <button type="button" class="secondary small" data-gear-qty="${id}:1" aria-label="One more">+</button>
+      </div>
+      <select class="gear-where" data-bind="gear.${i}.location" data-rerender="true" aria-label="Where is ${esc(label)}?">${gearLocationOptions(item)}</select>
+      <div class="gear-row-actions">
+        ${item.kind === 'potion' || item.kind === 'scroll' ? `<button type="button" class="secondary small" data-gear-use="${id}">Use one</button>` : ''}
+        <button type="button" class="secondary small" data-gear-toggle="${id}" aria-expanded="${open}">${open ? 'Done' : 'Edit'}</button>
+        <button type="button" class="icon-button" data-remove-gear="${id}" aria-label="Remove ${esc(label)}">×</button>
+      </div>
+    </div>`;
+  if (!open) return `<div class="item-card gear-card compact ${equipped ? 'equipped' : ''}">${head}</div>`;
   return `<div class="item-card gear-card ${equipped ? 'equipped' : ''}">
-    <div class="item-head">
-      <strong>${esc(gearName(item) || `New ${KIND_LABELS[item.kind].toLowerCase()}`)}</strong>
-      <span class="tag">${esc(KIND_LABELS[item.kind])}</span>
-      <span class="muted micro gear-status">${equipped ? `Equipped · ${esc(slot.label)}` : 'Not equipped · no bonuses'}</span>
-      <button type="button" class="icon-button" data-remove-gear="${esc(item.id)}" aria-label="Remove ${esc(gearName(item) || 'item')}">×</button>
-    </div>
+    ${head}
+    <p class="muted micro gear-status">${equipped ? `Equipped · ${esc(slot.label)} · bonuses apply` : 'Not equipped · no bonuses'}</p>
     <div class="fields gear-fields">
       ${nameFields}
-      ${field('Quantity', `<input type="number" min="1" step="1" data-bind="gear.${i}.qty" data-rerender="true" value="${esc(item.qty)}">`)}
-      ${field('Where is it?', `<select data-bind="gear.${i}.location" data-rerender="true">${gearLocationOptions(item)}</select>`, 'gear-wide')}
       ${item.location === 'holding' ? `<label class="check gear-check"><input type="checkbox" data-bind="gear.${i}.twoHanded" ${item.twoHanded ? 'checked' : ''}> Limitation: Two-Handed (uses both hands)</label>` : ''}
       ${item.location === 'accessories' ? field('Accessory type', `<select data-bind="gear.${i}.accessoryType" data-rerender="true">${ACCESSORY_TYPES.map(([v, label]) => `<option value="${v}" ${item.accessoryType === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`) : ''}
     </div>
@@ -878,7 +953,7 @@ function gearCard(item, i) {
       <button type="button" class="secondary small" data-add-gear-skill="${esc(item.id)}">+ Skill bonus</button>
       <p class="muted micro">Skill Ranks can't take a Skill past its Rank limit (15, or 20 if your Race or Class allows); extra Ranks do nothing. A bonus to checks isn't Ranks, so it always applies.</p>
     </details>
-    ${item.kind === 'potion' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-use="${esc(item.id)}">Use one</button><span class="muted micro">Single use. In combat, no more than one potion every other round (Potion Sickness).</span></div>` : ''}
+    ${item.kind === 'potion' ? '<p class="muted micro">Single use. In combat, no more than one potion every other round (Potion Sickness).</p>' : ''}
     ${item.kind === 'spellbook' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-read="${esc(item.id)}" ${item.spell && Number(item.rank) >= 1 ? '' : 'disabled'}>Read it</button><span class="muted micro">Grants the Spell at its Rank, then the book disappears.</span></div>` : ''}
     ${item.kind === 'scroll' ? '<p class="muted micro">Casts the Spell once at its set Rank for no Mana, then turns to dust.</p>' : ''}
   </div>`;
@@ -913,13 +988,20 @@ function equipmentStep() {
   return `
     <p class="eyebrow">STEP 11 · EQUIPMENT</p>
     <h1>Gear up.</h1>
-    <p class="intro">Only items in your Gear Slots give bonuses; items in the Inventory or Hotlist don't. Inventory items are weightless, but you can only put away what you can lift.</p>
+    <p class="intro">Only items in your Gear Slots give bonuses; items in the Inventory or Hotlist don't. Inventory items are weightless, but you can only put away what you can lift. Keep this page open while you play: add loot as you find it and use potions and scrolls from here.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Items</h2><span class="ref">${gearItems(state).length} carried</span></div>
+      ${quickAddPanel()}
+      ${state.gear.map(gearCard).join('') || '<p class="muted">No items yet. Add what your crawler has found, bought or crafted.</p>'}
+      <datalist id="gear-skill-names">${[...new Set([...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)])].map((name) => `<option value="${esc(name)}">`).join('')}</datalist>
+    </section>
     <section class="panel">
       <div class="panel-head"><h2>Wealth & lifting</h2>${sourceRef('Gear pp. 98-99')}</div>
       <div class="fields">
         <label class="field"><span class="field-label">Gold coins</span><input type="number" min="0" step="1" data-bind="gold" data-rerender="true" value="${esc(state.gold)}"><small>All your gold fits in one Inventory slot.</small></label>
         <label class="field"><span class="field-label">Misc. Junk</span><input type="number" min="0" step="1" data-bind="miscJunk" data-rerender="true" value="${esc(state.miscJunk)}"><small>Spend 1 point to find an innocuous item. Sells for 1 gold each.</small></label>
       </div>
+      ${quickGoldPanel()}
       <p class="muted">Lifting limit: <strong>${d.lift ? `${d.lift} lb` : '—'}</strong>${d.lift ? ` (Strength ${enhanced.Str} × 15)` : ''}.</p>
       ${boosted.length ? `<p class="muted micro">Equipped gear raises Enhanced ${boosted.map((key) => `${key} to ${enhanced[key]} (${bonus[key] > 0 ? '+' : ''}${bonus[key]})`).join(', ')}. Unenhanced Stats don't change.</p>` : ''}
     </section>
@@ -934,12 +1016,6 @@ function equipmentStep() {
           <td class="nowrap ${over ? 'error' : 'muted'}">${used}/${slot.max}${slot.unit === 'hand' ? ' hands' : ''}</td></tr>`;
       }).join('')}</tbody></table></div>
       ${issues.length ? `<div class="validation-box"><strong>Fix these:</strong><ul>${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
-    </section>
-    <section class="panel">
-      <div class="panel-head"><h2>Items</h2><span class="ref">${gearItems(state).length} carried</span></div>
-      ${state.gear.map(gearCard).join('') || '<p class="muted">No items yet. Add what your crawler has found, bought or crafted.</p>'}
-      <div class="item-add-row">${ITEM_KINDS.map(([kind, label]) => `<button type="button" class="secondary small" data-add-gear="${kind}">+ ${label}</button>`).join('')}</div>
-      <datalist id="gear-skill-names">${[...new Set([...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)])].map((name) => `<option value="${esc(name)}">`).join('')}</datalist>
     </section>
     <section class="panel">
       <div class="panel-head"><h2>From character creation</h2>${sourceRef('Starting Gear step')}</div>
@@ -968,6 +1044,7 @@ function renderMain() {
     workshop: () => workshopView(state),
     'build-edit': buildEditorView,
     about: aboutView,
+    changelog: changelogView,
   };
   main.innerHTML = renderers[activeStep]();
 }
@@ -1334,17 +1411,32 @@ const gearById = (id) => state.gear.find((x) => x.id === id);
 
 // Equipment step buttons; true if handled.
 function gearClick(event) {
-  const target = event.target.closest('[data-add-gear], [data-remove-gear], [data-gear-use], [data-gear-read], [data-add-gear-skill], [data-remove-gear-skill], [data-take-off], [data-remove-starting]');
+  if (event.target.closest('[data-portrait-remove]')) {
+    if (!confirm('Remove the portrait?')) return true;
+    state.portrait = '';
+    saveState();
+    render();
+    return true;
+  }
+  const target = event.target.closest('[data-remove-gear], [data-gear-use], [data-gear-read], [data-add-gear-skill], [data-remove-gear-skill], [data-take-off], [data-remove-starting], [data-gear-qty], [data-gear-toggle]');
   if (!target) return false;
-  const { addGear, removeGear, gearUse, gearRead, addGearSkill, removeGearSkill, takeOff, removeStarting } = target.dataset;
-  if (addGear) {
-    state.gear.push(newGearItem(addGear));
+  const { removeGear, gearUse, gearRead, addGearSkill, removeGearSkill, takeOff, removeStarting, gearQty, gearToggle } = target.dataset;
+  if (gearToggle) {
+    if (openGear.has(gearToggle)) openGear.delete(gearToggle);
+    else openGear.add(gearToggle);
+    renderMain();
+    return true;
+  } else if (gearQty) {
+    const [id, by] = gearQty.split(':');
+    const item = gearById(id);
+    item.qty = Math.max(1, (Number(item.qty) || 1) + Number(by));
   } else if (removeGear) {
     const item = gearById(removeGear);
     if (item && gearName(item) && !confirm(`Remove ${gearName(item)}?`)) return true;
     state.gear = state.gear.filter((x) => x.id !== removeGear);
   } else if (gearUse) {
     const item = gearById(gearUse);
+    if (item.kind === 'scroll' && !confirm(`Cast ${gearName(item)}? The scroll turns to dust.`)) return true;
     const left = Math.max(0, (Number(item.qty) || 1) - 1);
     if (left) item.qty = left;
     else state.gear = state.gear.filter((x) => x !== item);
@@ -1481,7 +1573,95 @@ document.addEventListener('keydown', (event) => {
   menu.querySelector('summary').focus();
 });
 
+// Shrink an uploaded image to a JPEG data URL that fits the sheet's Portrait
+// box (137 x 115 pt) at print quality and stays under PORTRAIT_MAX_CHARS.
+async function portraitDataUrl(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('That file isn’t an image this browser can read.'));
+      img.src = url;
+    });
+    for (const [max, quality] of [[480, 0.85], [480, 0.7], [360, 0.7], [280, 0.6]]) {
+      const scale = Math.min(1, max / image.naturalWidth, (max * 115 / 137) / image.naturalHeight);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#fff'; // Transparent areas print white.
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const data = canvas.toDataURL('image/jpeg', quality);
+      if (data.length <= PORTRAIT_MAX_CHARS) return data;
+    }
+    throw new Error('That image couldn’t be made small enough. Try a simpler one.');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function setPortrait(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) return setNotice('Choose an image file.');
+  if (file.size > PORTRAIT_MAX_UPLOAD) {
+    input.value = '';
+    return setNotice(`That image is ${(file.size / 1024 / 1024).toFixed(1)} MB. Portraits must be under ${PORTRAIT_MAX_UPLOAD / 1024 / 1024} MB.`, 5000);
+  }
+  try {
+    state.portrait = await portraitDataUrl(file);
+    saveState();
+    render();
+    setNotice('Portrait added. It goes in the Portrait box on the sheet.');
+  } catch (error) {
+    input.value = '';
+    setNotice(error.message, 5000);
+  }
+}
+
+// Quick add on the Equipment step; true if handled.
+function quickSubmit(event) {
+  const form = event.target.closest('[data-quick-gear], [data-quick-gold]');
+  if (!form) return false;
+  event.preventDefault();
+  const data = new FormData(form);
+  if (form.matches('[data-quick-gold]')) {
+    const amount = Math.max(0, Math.trunc(Number(data.get('amount')) || 0));
+    const spend = event.submitter?.value === 'spend';
+    const have = Number(state.gold) || 0;
+    if (spend && amount > have) {
+      setNotice(`You only have ${have} gold.`);
+      return true;
+    }
+    state.gold = String(spend ? have - amount : have + amount);
+    setNotice(`${spend ? 'Spent' : 'Added'} ${amount} gold; ${state.gold} left.`);
+  } else {
+    readQuickGear(form);
+    const { kind, location } = quickGear;
+    const qty = Math.max(1, Math.trunc(Number(quickGear.qty) || 1));
+    const name = quickGear.name.trim();
+    const spellItem = kind === 'scroll' || kind === 'spellbook';
+    if (spellItem && !(quickGear.spell && Number(quickGear.rank) >= 1)) return setNotice('Choose the Spell and its Rank.'), true;
+    if (!spellItem && kind !== 'custom' && !name) return true;
+    const item = normalizeGearItem({
+      ...newGearItem(kind === 'custom' ? 'item' : kind), qty, location,
+      ...(spellItem ? { spell: quickGear.spell, rank: String(Math.trunc(Number(quickGear.rank))) } : { name }),
+    });
+    state.gear.push(item);
+    if (kind === 'custom') openGear.add(item.id);
+    Object.assign(quickGear, { name: '', qty: '1', spell: '', rank: '' });
+    setNotice(`Added ${qty > 1 ? `${qty} × ` : ''}${gearName(item) || 'a custom item'}${kind === 'custom' ? '. Fill in its details below.' : '.'}`);
+  }
+  saveState();
+  render();
+  main.querySelector(form.matches('[data-quick-gold]') ? '[data-quick-gold] input' : '[data-quick-gear] input[name="name"], [data-quick-gear] select[name="spell"]')?.focus();
+  return true;
+}
+
 main.addEventListener('submit', async (event) => {
+  if (quickSubmit(event)) return;
   const form = event.target.closest('[data-account-form]');
   if (!form || !isAccountForm(form.dataset.accountForm)) return;
   event.preventDefault();
@@ -1508,6 +1688,12 @@ main.addEventListener('submit', async (event) => {
 
 main.addEventListener('change', (event) => {
   if (workshopChange(event, workshopContext)) return;
+  if (event.target.matches('[data-portrait]')) return setPortrait(event.target);
+  if (event.target.matches('[data-quick-kind]')) {
+    readQuickGear(event.target.form);
+    renderMain();
+    return main.querySelector('[data-quick-gear] input[name="name"], [data-quick-gear] select[name="spell"]')?.focus();
+  }
   const draft = event.target.closest('[data-level-draft], [data-skill-draft]');
   if (draft) {
     if (draft.dataset.levelDraft === 'floor') levelDraft.floor = draft.value;
@@ -1614,6 +1800,8 @@ main.addEventListener('change', (event) => {
 
 main.addEventListener('input', (event) => {
   if (workshopInput(event)) return;
+  const quick = event.target.closest('[data-quick-gear]');
+  if (quick) return readQuickGear(quick);
   const target = event.target;
   if (target.matches('[data-bind]') && target.type !== 'checkbox' && target.tagName !== 'SELECT') {
     setPath(target.dataset.bind, target.value);
@@ -1730,7 +1918,7 @@ main.addEventListener('pointercancel', (event) => {
   clearHotlistDragStyles();
 });
 
-// The header and footer link to pages such as About; /#about opens it.
+// The header and footer link to pages such as About; /#about and /#changelog open them.
 document.querySelectorAll('header, footer').forEach((el) => el.addEventListener('click', (event) => {
   const link = event.target.closest('[data-nav]');
   if (!link) return;
@@ -1738,6 +1926,8 @@ document.querySelectorAll('header, footer').forEach((el) => el.addEventListener(
   navigate(link.dataset.nav);
 }));
 if (location.hash === '#about') activeStep = 'about';
+if (location.hash === '#changelog') activeStep = 'changelog';
+document.querySelectorAll('[data-version]').forEach((el) => { el.textContent = `v${VERSION}`; });
 
 render();
 // Coming back from Google sign-in: /?signed_in=google or /?auth_error=<code>.

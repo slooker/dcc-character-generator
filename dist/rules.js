@@ -195,12 +195,21 @@ export function generateCrawlerNumber(cryptoObject = globalThis.crypto) {
   return min + Math.floor(Math.random() * span);
 }
 
+// Portraits: uploads up to 2 MB, stored shrunk as a JPEG data URL so a saved
+// crawler stays small.
+export const PORTRAIT_MAX_UPLOAD = 2 * 1024 * 1024;
+export const PORTRAIT_MAX_CHARS = 150000;
+export function validPortrait(value) {
+  return typeof value === 'string' && value.length <= PORTRAIT_MAX_CHARS && /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(value);
+}
+
 export function initialState() {
   return {
     version: 1,
     name: '',
     number: generateCrawlerNumber(),
     pronouns: '',
+    portrait: '',
     kind: '',
     species: '',
     size: '',
@@ -273,6 +282,7 @@ export function normalizeState(raw) {
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
   merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
+  merged.portrait = validPortrait(raw.portrait) ? raw.portrait : '';
   return merged;
 }
 
@@ -843,6 +853,8 @@ export function derived(state) {
     currentMana: Number.isFinite(intScore) && intScore > 0 ? intScore : null,
     evadeDex: mods.Dex,
     evadeBuff: evadeBuff(state),
+    // Race/Class Evade extras: '+1d4' and/or 'Adv' (Advantage).
+    evadeExtras: [...new Set(effects.filter((x) => x.type === 'evade').map((x) => x.text))],
     move: 20 + moveBonus,
     step: 10 + stepBonus,
     aiFavor: state.kind === 'human' ? 1 + humanLevelFavor(state) : state.kind === 'animal' ? 0 + humanLevelFavor(state) : null,

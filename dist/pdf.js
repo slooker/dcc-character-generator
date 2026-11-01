@@ -1,6 +1,6 @@
 import {
   stats, allSkills, attackRowsForSheet, derived, carriedItems, hotlist,
-  unenhancedStats, enhancedStats, findRace, findClass, errors,
+  unenhancedStats, enhancedStats, findRace, findClass, errors, validPortrait,
 } from './rules.js';
 import { skillText } from './skill-text.js';
 
@@ -187,7 +187,8 @@ function wrapText(font, size, text, width) {
 // book's stat lines and every Upgrade (those reached at its Rank marked), in
 // two columns on as many pages as it takes.
 async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
-  if (!skills.length) return;
+  const abilities = raceClassEntries(state).filter(([, entry]) => entry.benefits.length);
+  if (!skills.length && !abilities.length) return;
   const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const [width, height] = [792, 612];
@@ -200,8 +201,8 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
   let y = 0;
   const newPage = () => {
     page = pdfDoc.addPage([width, height]);
-    page.drawText(drawable(bold, `SKILLS & SPELLS REFERENCE${state.name ? ` - ${state.name.toUpperCase()}` : ''}`), { x: margin, y: height - margin - 10, size: 12, font: bold });
-    page.drawText('Stat lines and Upgrades from the rulebook. Upgrades this crawler has reached are marked.', { x: margin, y: height - margin - 24, size: 7.5, font: regular });
+    page.drawText(drawable(bold, `RACE, CLASS, SKILLS & SPELLS REFERENCE${state.name ? ` - ${state.name.toUpperCase()}` : ''}`), { x: margin, y: height - margin - 10, size: 12, font: bold });
+    page.drawText('Race and Class benefits in full, then each Skill and Spell\'s stat lines and Upgrades from the rulebook. Upgrades this crawler has reached are marked.', { x: margin, y: height - margin - 24, size: 7.5, font: regular });
     column = 0;
     y = top;
   };
@@ -216,6 +217,23 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
       newPage();
     }
   };
+  const draw = (rows) => {
+    const lines = rows.flatMap(([font, size, text, indent]) => wrapText(font, size, drawable(font, text), columnWidth - indent).map((line) => [font, size, line, indent]));
+    const blockHeight = lines.reduce((sum, [, size]) => sum + size + 2.5, 0) + 8;
+    place(blockHeight);
+    const x = margin + column * (columnWidth + gap);
+    for (const [font, size, line, indent] of lines) {
+      y -= size + 2.5;
+      page.drawText(line, { x: x + indent, y, size, font });
+    }
+    y -= 8;
+  };
+  for (const [label, entry] of abilities) {
+    draw([
+      [bold, 9, `${label}: ${entry.name}${entry.custom ? ' (custom)' : ''}`, 0],
+      ...entry.benefits.map((text) => [regular, 7.5, `• ${text}`, 0]),
+    ]);
+  }
   for (const skill of skills) {
     const entry = bookText(skill.name);
     const stat = skill.stat && skill.stat !== 'None' ? ` · ${skill.stat} ${d.modText[skill.stat] || ''}`.trimEnd() : '';
@@ -228,16 +246,22 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
       for (const [r, text] of entry.upgrades) rows.push([r <= rank ? bold : regular, 7.5, `${r <= rank ? '[Reached] ' : ''}Rank ${r}: ${text}`, 8]);
     }
     if (skill.source) rows.push([regular, 7, `From: ${skill.source}`, 0]);
-    const lines = rows.flatMap(([font, size, text, indent]) => wrapText(font, size, drawable(font, text), columnWidth - indent).map((line) => [font, size, line, indent]));
-    const blockHeight = lines.reduce((sum, [, size]) => sum + size + 2.5, 0) + 8;
-    place(blockHeight);
-    const x = margin + column * (columnWidth + gap);
-    for (const [font, size, line, indent] of lines) {
-      y -= size + 2.5;
-      page.drawText(line, { x: x + indent, y, size, font });
-    }
-    y -= 8;
+    draw(rows);
   }
+}
+
+function raceClassEntries(state) {
+  return [['Race', findRace(state.race, state)], ['Class', findClass(state.className, state)]].filter(([, entry]) => entry);
+}
+
+// Benefits the sheet's numbers don't show (immunities, movement, Rank 20
+// allowances, Stat caps...) and those it shows only in part (day/night Stats,
+// Evade dice), in the sheet's short wording.
+const NOTED_EFFECTS = new Set(['dayNight', 'rankLimit', 'statCap', 'evade']);
+function abilityNotes(entry) {
+  return entry.benefits
+    .map((text, i) => (!entry.effects[i].length || entry.effects[i].some((x) => NOTED_EFFECTS.has(x.type)) ? entry.short?.[i] || text : null))
+    .filter(Boolean);
 }
 
 export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
@@ -277,7 +301,9 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
 
   // Evade: active d20 check; do not invent a static total.
   setField(form, 'Text Field 24', d.evadeDex || '', { fontSize: 9 });
-  setField(form, 'Text Field 25', d.evadeBuff || '', { fontSize: 9 });
+  // Dodge's +1, then Race/Class extras ("+1d4", "Adv").
+  const evadeBuffs = [d.evadeBuff || '', ...d.evadeExtras].filter(Boolean).join(' ');
+  setField(form, 'Text Field 25', evadeBuffs, { fontSize: evadeBuffs.length > 6 ? 7 : 9 });
   clearField(form, 'Text Field 26');
 
   setField(form, 'Text Field 27', d.move, { fontSize: 9 });
@@ -342,17 +368,19 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 101', state.story.regret, { fontSize: 8, multiline: true });
 
   const reviewNotes = [];
-  // A sheet can be downloaded before it's finished; it says so first.
-  const issues = errors(state);
-  if (issues.length) reviewNotes.push(`THIS SHEET STILL HAS ${issues.length} ISSUE${issues.length === 1 ? '' : 'S'}:`, ...issues.map((x) => `• ${x}`), '');
+  // Race/Class abilities first: they matter at the table. The reference page
+  // at the end has them in full.
+  for (const [label, entry] of raceClassEntries(state)) {
+    const text = abilityNotes(entry);
+    if (text.length) reviewNotes.push(`${label} (${entry.name}): ${text.join('; ')}.`);
+  }
   if (state.performance && allSkills(state).some((x) => x.name === 'Performance')) reviewNotes.push(`Performance specialty: ${state.performance}`);
   if (d.dayNight) reviewNotes.push('Stats, Mods and Mana shown as two numbers: the first is daytime, the second is night time.');
-  // Race/Class benefits that aren't fully captured by numbers on the sheet.
-  for (const [label, entry] of [['Race', findRace(state.race, state)], ['Class', findClass(state.className, state)]]) {
-    const text = entry?.benefits.filter((_, i) => !entry.effects[i].length || entry.effects[i].some((x) => x.type === 'dayNight')) || [];
-    if (text.length) reviewNotes.push(`${label} (${entry.name}): ${text.join('; ')}`);
-  }
-  setField(form, 'Text Field 102', reviewNotes.join('\n'), { fontSize: reviewNotes.join('').length > 600 ? 5 : 7, multiline: true });
+  // A sheet can be downloaded before it's finished; it says so.
+  const issues = errors(state);
+  if (issues.length) reviewNotes.push(`${reviewNotes.length ? '\n' : ''}THIS SHEET STILL HAS ${issues.length} ISSUE${issues.length === 1 ? '' : 'S'}:`, ...issues.map((x) => `• ${x}`));
+  const notesText = reviewNotes.join('\n');
+  setField(form, 'Text Field 102', notesText, { fontSize: notesText.length > 700 ? 5 : notesText.length > 450 ? 6 : 7, multiline: true });
 
   // Page 3: Skills. Twenty rows, six field numbers apart because the checkbox occupies the sixth widget.
   const skills = allSkills(state);
@@ -367,6 +395,17 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     form.updateFieldAppearances(font);
   } catch (error) {
     throw new Error(`A character-sheet field contains text the PDF font cannot encode. Remove unusual emoji/symbols and try again. (${error.message})`);
+  }
+
+  // Portrait: an image button on page 1. Set after the appearance update so
+  // it isn't redrawn blank.
+  if (validPortrait(state.portrait)) {
+    try {
+      const image = state.portrait.startsWith('data:image/png') ? await pdfDoc.embedPng(state.portrait) : await pdfDoc.embedJpg(state.portrait);
+      form.getButton('Image7_af_image').setImage(image);
+    } catch (error) {
+      console.warn('Portrait could not be added to the sheet.', error);
+    }
   }
 
   const extras = await overflowPages(PDFDocument, StandardFonts.Helvetica, templateBytes, skills, SKILL_ROWS, (extraForm, rows) => fillSkillRows(extraForm, rows, state, d));

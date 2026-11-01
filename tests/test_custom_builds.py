@@ -85,6 +85,41 @@ class BuildSystemTests(unittest.TestCase):
         # A row saved with one stat and an amount still works.
         self.assertEqual(self.eval("normalizeBuild({ benefits: [{ option: 'stat', stat: 'Con', amount: 3 }] }).benefits[0].stats"), {"Con": 3})
 
+    def test_size_benefits(self) -> None:
+        # Small is a Major benefit; Large isn't in the book's menu, so its tier is agreed with the GM.
+        self.assertEqual(self.points("build('race', [{ option: 'small' }])")["spent"], 3)
+        self.assertEqual(self.points("build('race', [{ option: 'large', tier: 'moderate' }])")["spent"], 2)
+        self.assertEqual(self.eval("newRow('large').tier"), "major")
+        entry = self.eval("buildEntry(build('race', [{ option: 'large', tier: 'major' }]))")
+        self.assertEqual(entry["benefits"], ["Size: Large (5)", "Silver Earth Box, with guaranteed Earth Hobby Potion"])
+        self.assertTrue(any("both Small and Large" in x for x in self.errors("build('race', [{ option: 'small' }, { option: 'large' }])")))
+        self.assertTrue(any("only a Race" in x for x in self.errors("build('class', [{ option: 'large' }])")))
+
+    def test_d4_checks_choose_evade_or_a_stat(self) -> None:
+        evade = self.eval("buildEntry(build('race', [{ option: 'd4Checks', check: 'Evade' }]))")
+        self.assertEqual(evade["effects"][1], [{"type": "evade", "text": "+1d4"}])
+        self.assertEqual(evade["short"][1], "+1d4 to Evade Checks")
+        dex = self.eval("buildEntry(build('race', [{ option: 'd4Checks', check: 'Dex' }]))")
+        self.assertEqual((dex["benefits"][1], dex["effects"][1]), ("Add 1d4 to Dexterity Stat Checks", []))
+        # Rows saved before the choice named it in their details.
+        self.assertEqual(self.eval("build('race', [{ option: 'd4Checks', detail: 'Strength' }]).benefits[0].check"), "Str")
+        self.assertEqual(self.eval("build('race', [{ option: 'd4Checks', detail: 'evade checks' }]).benefits[0].check"), "Evade")
+
+    def test_sheet_wording_is_short(self) -> None:
+        entry = self.eval("""buildEntry(build('race', [
+            { option: 'noBreathing' }, { option: 'diseaseImmunity' }, { option: 'climb' },
+            { option: 'majorDefense', detail: 'Advantage on Evade Checks' }, { option: 'pet', detail: 'A loyal goat' },
+        ], [{ option: 'vulnerableUncommon', detail: 'Cold' }]))""")
+        self.assertEqual(entry["short"][1:7], [
+            "Doesn’t need to breathe; immune to inhaled toxins",
+            "Immune to Poison and all diseases",
+            "Climb Movement: climbs most surfaces, even ceilings",
+            "Advantage on Evade Checks",
+            "Pet or Mount: A loyal goat",
+            "Vulnerable (double damage): Cold",
+        ])
+        self.assertEqual(entry["effects"][4], [{"type": "evade", "text": "Adv"}])
+
     def test_names(self) -> None:
         self.assertIsNone(self.eval("nameIssue('Dungeon Dad', 'class')"))
         self.assertIsNone(self.eval("nameIssue('Moth Man/Moth Woman', 'race')"))
@@ -181,6 +216,11 @@ class CustomRaceOnCrawlerTests(unittest.TestCase):
         self.js.eval("var bad = Object.assign(newBuild('race'), { name: 'Overclocked', benefits: rows([{ option: 'stat', stat: 'Str', amount: 30 }]) });")
         errors = self.eval("raceClassErrors(crawler(bad))")
         self.assertTrue(any("doesn’t follow the Build System" in x for x in errors), errors)
+
+    def test_evade_extras(self) -> None:
+        self.js.eval("""var s = crawler(Object.assign(newBuild('race'), { name: 'Slipper', benefits: rows([
+          { option: 'd4Checks', check: 'Evade' }, { option: 'majorDefense', detail: 'Advantage on Evade' }]) }))""")
+        self.assertEqual(self.eval("derived(s).evadeExtras"), ["+1d4", "Adv"])
 
     def test_snapshot_survives_normalize(self) -> None:
         self.assertEqual(self.eval("findRace('Gutter Sprite', normalizeState(JSON.parse(JSON.stringify(crawler(goblinish))))).name"), "Gutter Sprite")

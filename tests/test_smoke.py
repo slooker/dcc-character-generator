@@ -207,6 +207,20 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn("warnIfHotlistCollision(target.value, `item:${item.id}`)", app)
         self.assertIn("target.value = state[target.dataset.bind]", app)
 
+    def test_quick_inventory_and_portrait_controls(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        # Equipment: quick add, gold add/spend, quantity steppers, Use on potions and scrolls.
+        for marker in ("data-quick-gear", "data-quick-gold", "data-gear-qty=", "data-gear-toggle=", "function quickSubmit(event)"):
+            self.assertIn(marker, app)
+        # One "Add" type dropdown; Custom… opens the full editor.
+        self.assertIn("const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom…']];", app)
+        self.assertIn("if (kind === 'custom') openGear.add(item.id);", app)
+        self.assertNotIn("data-add-gear=", app)
+        self.assertIn("item.kind === 'potion' || item.kind === 'scroll' ? `<button type=\"button\" class=\"secondary small\" data-gear-use=", app)
+        # Portraits over the upload limit are refused before they're read.
+        self.assertIn("if (file.size > PORTRAIT_MAX_UPLOAD)", app)
+        self.assertIn('data-portrait', app)
+
     def test_hotlist_supports_drag_reorder_and_accessible_buttons(self) -> None:
         app = (DIST / "app.js").read_text(encoding="utf-8")
         css = (DIST / "style.css").read_text(encoding="utf-8")

@@ -9,7 +9,7 @@
 import { api } from './api.js';
 import { account, verified } from './account.js';
 import {
-  BUILD_POINTS, MAX_DETRIMENT_POINTS, PASSIVE_RANK_LIMIT, NAME_MAX, DESCRIPTION_MAX, TEXT_MAX, STATS, STAT_NAMES, CLUBS,
+  BUILD_POINTS, MAX_DETRIMENT_POINTS, PASSIVE_RANK_LIMIT, NAME_MAX, DESCRIPTION_MAX, TEXT_MAX, STATS, STAT_NAMES, CLUBS, CHECKS,
   CLASS_TYPES, TIERS, newBuild, newRow, normalizeBuild, buildEntry, buildErrors, buildPoints, rowCost,
   optionsFor, tiersFor, benefitOption, detrimentOption, bookSkill, groupable, statSpread,
 } from './builds.js';
@@ -290,6 +290,7 @@ function rowFields(row, i, section) {
   if (fields.includes('skill')) out.push(skillSelect(row, i, section));
   if (fields.includes('stat')) out.push(`<label class="field">Stat<select ${name('stat')}>${STATS.map((s) => `<option value="${s}" ${s === row.stat ? 'selected' : ''}>${STAT_NAMES[s]}</option>`).join('')}</select></label>`);
   if (fields.includes('amount')) out.push(`<label class="field build-amount">${section === 'detriments' ? 'Penalty' : 'Times'}<input type="number" min="1" max="20" ${name('amount')} value="${esc(row.amount)}"></label>`);
+  if (fields.includes('check')) out.push(`<label class="field">Checks<select ${name('check')}>${CHECKS.map((c) => `<option value="${c}" ${c === row.check ? 'selected' : ''}>${c === 'Evade' ? 'Evade' : `${STAT_NAMES[c]} Stat Checks`}</option>`).join('')}</select></label>`);
   if (fields.includes('club')) out.push(`<label class="field">Club<select ${name('club')}>${CLUBS.map((c) => `<option ${c === row.club ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`);
   if (fields.includes('tier')) out.push(`<label class="field">Tier<select ${name('tier')}>${tiersFor(section === 'detriments').map(([id, label, cost]) => `<option value="${id}" ${id === row.tier ? 'selected' : ''}>${label} (${cost})</option>`).join('')}</select></label>`);
   if (fields.includes('text')) out.push(`<label class="field build-wide">Describe it<input ${name('text')} value="${esc(row.text)}" maxlength="${TEXT_MAX}"></label>`);

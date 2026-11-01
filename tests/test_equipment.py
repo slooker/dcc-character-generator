@@ -137,6 +137,16 @@ class EquipmentRulesTests(unittest.TestCase):
         self.assertEqual(state["gear"][0]["location"], "inventory")
         self.assertEqual(self.val("normalizeState({ name: 'Older' }).gear"), [])
 
+    def test_portraits_are_small_images_only(self) -> None:
+        ok = "data:image/jpeg;base64,AAAA"
+        self.assertEqual(self.val(f"normalizeState({{ portrait: '{ok}' }}).portrait"), ok)
+        self.assertEqual(self.val("normalizeState({ portrait: 'javascript:alert(1)' }).portrait"), "")
+        self.assertEqual(self.val("normalizeState({ portrait: 'data:image/svg+xml;base64,AAAA' }).portrait"), "")
+        too_big = "'data:image/jpeg;base64,' + 'A'.repeat(PORTRAIT_MAX_CHARS)"
+        self.assertEqual(self.val(f"normalizeState({{ portrait: {too_big} }}).portrait"), "")
+        self.assertEqual(self.val("PORTRAIT_MAX_UPLOAD"), 2 * 1024 * 1024)
+        self.assertEqual(self.val("initialState().portrait"), "")
+
 
 PDF_CRAWLER = """(() => {
   const s = initialState();

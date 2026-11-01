@@ -192,3 +192,61 @@ class SkillDetailTests(unittest.TestCase):
         self.assertIn("SKILLS & SPELLS REFERENCE - TESS", text)
         self.assertIn("Shock Treatment - Rank 3", text)
         self.assertIn("Rank 15: +1d2 base damage, and if you make this attack at melee range", text)
+
+
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class CustomRaceAbilityTests(unittest.TestCase):
+    """A custom Race's text-only benefits and detriments reach the sheet."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.reader = export_pdf(
+            """(() => {
+              const s = initialState(); s.name = 'Tess'; s.kind = 'human';
+              s.backgrounds = backgrounds.human.map((st) => ({ option: 0, picks: st.options[0].skills.slice(0, 2).map((x) => x.name) }));
+              s.combatType = 'weapon'; s.combat = 'Club';
+              s.stats = { Str: '6', Int: '5', Con: '4', Dex: '3', Cha: '2' };
+              const b = normalizeBuild({ kind: 'race', name: 'Lizardoid', benefits: [
+                { option: 'noBreathing' }, { option: 'diseaseImmunity' }, { option: 'climb' },
+                { option: 'majorDefense', detail: 'Advantage on Evade Checks' }, { option: 'd4Checks', check: 'Evade' },
+                { option: 'large', tier: 'major' } ],
+                detriments: [{ option: 'vulnerableUncommon', detail: 'Cold' }] });
+              s.customRace = { id: 1, author: 'Bob', build: b }; s.race = b.name;
+              return s;
+            })()"""
+        )
+        cls.fields = {name: field.get("/V") for name, field in (cls.reader.get_fields() or {}).items()}
+
+    def test_abilities_lead_the_notes(self) -> None:
+        notes = self.fields["Text Field 102"]
+        self.assertTrue(notes.startswith("Race (Lizardoid): Doesn’t need to breathe; immune to inhaled toxins; Immune to Poison and all diseases; "
+                                         "Climb Movement: climbs most surfaces, even ceilings; Advantage on Evade Checks; +1d4 to Evade Checks; "
+                                         "Vulnerable (double damage): Cold."), notes)
+        self.assertIn("THIS SHEET STILL HAS", notes)  # after the abilities
+
+    def test_evade_buffs_and_size(self) -> None:
+        self.assertEqual(self.fields["Text Field 25"], "Adv +1d4")
+        self.assertEqual(self.fields["Text Field 33"], "Large (5)")
+
+    def test_reference_page_has_the_race_in_full(self) -> None:
+        text = "\n".join(p.extract_text() for p in self.reader.pages if "REFERENCE" in p.extract_text())
+        self.assertIn("Race: Lizardoid (custom)", text)
+        self.assertIn("• A Climb Movement: automatically climb most surfaces, even ceilings", text)
+
+
+# A 2 x 2 white JPEG.
+TINY_JPEG = ("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/"
+              "wAALCAACAAIBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")
+
+
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class PortraitTests(unittest.TestCase):
+    def test_portrait_fills_the_portrait_box(self) -> None:
+        reader = export_pdf("(() => { const s = initialState(); s.name = 'Tess'; s.portrait = '%s'; return normalizeState(s); })()" % TINY_JPEG)
+        button = next(a.get_object() for a in reader.pages[0]["/Annots"] if a.get_object().get("/T") == "Image7_af_image")
+        appearance = button["/AP"]["/N"].get_object()
+        self.assertTrue(any(x.get_object().get("/Subtype") == "/Image" for x in appearance["/Resources"]["/XObject"].values()))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
