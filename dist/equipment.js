@@ -11,6 +11,7 @@
 //   Spell at its Rank when read, then disappears.
 //
 // The book has no item catalog, so items and their bonuses are player-entered.
+// A weapon names the weapon Skill it attacks with (its Rank and dice).
 // A Skill bonus is either Ranks (capped by the Skill's Rank limit, like any
 // other Ranks) or a bonus to that Skill's checks (not Ranks, so not capped).
 // This module only reads `state`; rules.js applies the bonuses.
@@ -33,6 +34,7 @@ export const CLOTHING_SLOTS = { Head: 'head', Torso: 'torso', Arms: 'arms', Hand
 
 export const ITEM_KINDS = [
   ['item', 'Item'],
+  ['weapon', 'Weapon'],
   ['potion', 'Potion'],
   ['scroll', 'Scroll'],
   ['spellbook', 'Spellbook'],
@@ -61,6 +63,7 @@ export function newGearItem(kind = 'item') {
     accessoryType: '',
     spell: '',
     rank: '',
+    weaponSkill: '',
     bonuses: { stats: {}, skills: [], dr: '' },
   };
 }
@@ -69,6 +72,7 @@ export function normalizeGearItem(raw) {
   const base = newGearItem(raw?.kind);
   const item = { ...base, ...(raw && typeof raw === 'object' ? raw : {}) };
   if (!ITEM_KINDS.some(([kind]) => kind === item.kind)) item.kind = 'item';
+  item.weaponSkill = String(item.weaponSkill || '');
   const bonuses = item.bonuses && typeof item.bonuses === 'object' ? item.bonuses : {};
   item.bonuses = {
     stats: bonuses.stats && typeof bonuses.stats === 'object' ? bonuses.stats : {},
@@ -202,6 +206,8 @@ export function equipmentErrors(state) {
       out.push(`Choose the Spell and its Rank for ${item.kind === 'scroll' ? 'the scroll' : 'the spellbook'} (${name}).`);
     } else if (!gearName(item)) {
       out.push(`Name item ${index + 1} or remove it.`);
+    } else if (item.kind === 'weapon' && !String(item.weaponSkill || '').trim()) {
+      out.push(`Choose the weapon Skill “${name}” attacks with.`);
     }
     const qty = int(item.qty);
     if (qty === null || qty < 1) out.push(`Give “${name}” a whole-number quantity of at least 1.`);

@@ -36,6 +36,29 @@ export const attacks = {
   'Shock Treatment': attack('Int', '1d2', 'Int', 'Electric', 212, '', 30, 2, 2),
   'Soul Collector': attack('Int', '1d4', 'Int', 'Necrotic', 212, '', 50, 4, 1),
   'Vine Porn': attack('Con', '1d4', 'Con', 'Piercing', 213, 'Favored: Druid.', 20, 3, 1),
+  // Attack Skills and Spells crawlers gain later (Race, Class, skill-ups,
+  // spellbooks), from each entry's Base Damage, Range and Mana Cost lines.
+  // Spells with no Base Damage have no dice.
+  Bite: attack('Str', '1d8', 'Str', 'Piercing', 177),
+  'Bad Faith': attack('Cha', '', null, '', 203, 'No base damage; see the Spell.', 40, 10),
+  'Drain Life': attack('Int', '1d6', 'Int', 'Necrotic', 204, '', 30, 14),
+  Earworm: attack('Cha', '1d6', 'Cha', 'Sonic', 204, '', 30, 6),
+  Fear: attack('Int', '', null, '', 204, 'No base damage; see the Spell.', 25, 3),
+  Fireball: attack('Int', '1d12', 'Int', 'Fire', 205, '10ft Blast radius.', 80, 45),
+  'Holy Aura': attack('Cha', '1d4', 'Cha', 'Holy', 207, '5ft Burst radius.', 5, 7),
+  'Ice Blast': attack('Int', '1d8', 'Int', 'Ice', 207, '', 40, 9),
+  Icicles: attack('Int', '1d12', 'Int', 'Ice', 207, '', 60, 19),
+  'Lightning Bolt': attack('Int', '1d10', 'Int', 'Electric', 208, '', 100, 15),
+  'Magic Missile': attack('Int', '1d4', 'Int', 'Force', 208, 'Range: within your line of sight.', 5, 5, 1),
+  'Paladin’s Smite': attack('Cha', '1d8', 'Cha', 'Holy', 209, '', 30, 11),
+  'Rise, Dead Minion!': attack('Int', '', null, '', 211, 'No base damage; see the Spell.', 30, 10),
+  Rootfoot: attack('Int', '', null, '', 211, 'No base damage; see the Spell.', 30, 5),
+  Solsplash: attack('Con', '1d8', 'Con', 'Fire', 212, '', 30, 13),
+  Thunderlash: attack('Int', '1d10', 'Int', 'Sonic', 212, '', 50, 12),
+  'Turn Undead': attack('Int', '', null, '', 213, 'No base damage; see the Spell.', 10, 9),
+  'Unnecessary Force': attack('Int', '1d12', 'Int', 'Force', 213, '', 40, 13),
+  Web: attack('Int', '', null, '', 214, 'No base damage; see the Spell.', 20, 6),
+  'Wilbur’s Slow-build Fireblast': attack('Int', '1d8', 'Int', 'Fire', 214, 'The target gains the Burned Debuff.', 50, 60),
 };
 
 export const damageEffects = {

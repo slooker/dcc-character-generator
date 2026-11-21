@@ -1,7 +1,7 @@
 import {
   backgrounds, weapons, spells, handToHand, stats, statNames, storyOptions,
   initialState, normalizeState, selectedSkills, selectedNames, allSkills, allAttacks,
-  attackRowsForSheet, derived, carriedItems, hotlist, errors, missingDetails,
+  attackRowsForSheet, tickedAttacks, derived, carriedItems, hotlist, errors, missingDetails,
   stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
@@ -592,15 +592,21 @@ function hotlistStep() {
   `;
 }
 
+function attackLocation(location) {
+  if (location === 'inventory') return 'in the Inventory';
+  if (String(location).startsWith('hotlist:')) return `Hotlist ${location.split(':')[1]}`;
+  return GEAR_SLOTS.find((x) => x.key === location)?.label || location;
+}
+
 function attacksStep() {
   const available = allAttacks(state);
   const chosen = state.combat;
-  const selectedSet = new Set(state.attackSheet || []);
-  if (chosen) selectedSet.add(chosen);
+  const selectedSet = tickedAttacks(state, available);
+  const shown = available.filter((x) => selectedSet.has(x.name)).length;
   return `
     <p class="eyebrow">STEP 8 · FRONT-PAGE ATTACKS</p>
     <h1>Choose what appears in the five Attack rows.</h1>
-    <p class="intro">Your chosen second combat option is always written to the front-page Attacks table. The starting Unarmed/Slice entry and any extra combat Skills from backgrounds can be included or omitted here. All learned Skills still appear on page 3.</p>
+    <p class="intro">Your chosen second combat option is always written to the front-page Attacks table. Every other attack you have can be included or left off: your starting Unarmed/Slice attack, attack Skills and Spells from backgrounds, Race, Class or the Skill & Spell log, and weapons from the Equipment step. Ranks are your current Ranks. All learned Skills still appear on page 3.</p>
     <section class="panel">
       <div class="panel-head"><h2>Attack rows</h2>${sourceRef('sheet page 1; creation pp. 108-110')}</div>
       <div class="attack-select-list">${available.map((attack) => {
@@ -608,10 +614,12 @@ function attacksStep() {
         const checked = mandatory || selectedSet.has(attack.name);
         const rank = attack.rank;
         const hit = attack.stat === 'None' ? '—' : `${attack.stat} ${derived(state).modText[attack.stat] || '?'}`;
-        const dmg = `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}`;
-        return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${mandatory ? ' · required' : ''}</small></span></label>`;
+        const dmg = attack.dice ? `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}` : 'no base damage';
+        const where = attack.source === 'Gear' ? ` · ${attackLocation(attack.location)}${rank ? '' : ` · you don't know ${attack.skill} yet`}` : '';
+        return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${esc(where)}${mandatory ? ' · required' : ''}</small></span></label>`;
       }).join('')}</div>
-      <div class="callout">The supplied sheet has five rows. If you know more than five Attack Skills, choose which non-required ones are most useful to show here.</div>
+      ${shown > 5 ? `<div class="validation-box">${shown} attacks are ticked, but the sheet has five rows. Only the first five go on the sheet: ${esc(attackRowsForSheet(state).map((x) => x.label || x.name).join(', '))}.</div>` : ''}
+      <div class="callout">The supplied sheet has five rows. If you have more than five attacks, choose which non-required ones are most useful to show here. Weapons you're holding or have in the Hotlist are ticked unless you untick them.</div>
     </section>
     ${actions('hotlist', 'raceclass')}
   `;
@@ -653,12 +661,26 @@ function reviewStep() {
   `;
 }
 
+// Race & Class cards: which ones have their benefits and full description
+// open, by "race:Name" / "class:Name" (this page view only).
+const rcOpen = { benefits: new Set(), descriptions: new Set() };
+const rcKey = (kind, entry) => `${kind}:${entry.name}`;
+
+function rcDescription(entry, kind) {
+  const text = String(entry.description || '').trim();
+  if (!text) return '';
+  const open = rcOpen.descriptions.has(rcKey(kind, entry));
+  return `<p class="rc-desc ${open ? 'open' : ''}"><span>${esc(text)}</span><button type="button" class="link-button" data-rc-desc="${esc(rcKey(kind, entry))}" aria-expanded="${open}">${open ? 'Show less' : 'Show more'}</button></p>`;
+}
+
 function raceClassCard(entry, kind, selected) {
   const types = entry.classTypes?.length ? ` · ${entry.classTypes.join(', ')}` : '';
+  const key = rcKey(kind, entry);
   return `<article class="rc-card ${selected ? 'selected' : ''}">
     <div class="rc-head"><strong>${esc(entry.name)}</strong><span class="tag">${entry.earth ? 'Earth' : kind === 'race' ? 'Alien' : 'Any Race'}</span></div>
     <p class="muted micro">${entry.custom ? `Custom ${kind === 'race' ? 'Race' : 'Class'}${entry.author ? ` by ${esc(entry.author)}` : ''}` : sourceRef(`p. ${entry.page}`)}${esc(types)}${entry.prerequisite ? ` · Limited: ${esc(entry.prerequisite)}` : ''}</p>
-    <details><summary>${entry.benefits.length} benefits</summary><ul>${entry.benefits.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></details>
+    ${rcDescription(entry, kind)}
+    <details data-rc-benefits="${esc(key)}" ${rcOpen.benefits.has(key) ? 'open' : ''}><summary>${entry.benefits.length} benefits</summary><ul>${entry.benefits.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></details>
     <button type="button" class="${selected ? 'secondary' : 'primary'}" data-${kind}="${esc(entry.name)}" aria-pressed="${selected}">${selected ? 'Selected' : `Choose ${kind === 'race' ? 'Race' : 'Class'}`}</button>
   </article>`;
 }
@@ -722,6 +744,27 @@ function skipRaceClass() {
   </div>`;
 }
 
+// Expand All / Collapse All, pinned to the side of the screen on this step.
+let rcCards = [];
+function rcExpandButton(cards) {
+  rcCards = cards.map(([kind, entry]) => [rcKey(kind, entry), Boolean(String(entry.description || '').trim())]);
+  const open = rcAllOpen();
+  return `<div class="rc-expand"><button type="button" class="secondary" data-rc-expand="${open ? 'collapse' : 'expand'}">${open ? 'Collapse All' : 'Expand All'}</button></div>`;
+}
+
+function rcAllOpen() {
+  return rcCards.length > 0 && rcCards.every(([key, hasText]) => rcOpen.benefits.has(key) && (!hasText || rcOpen.descriptions.has(key)));
+}
+
+// Relabel after a card is opened or closed by hand.
+function labelRcExpand() {
+  const button = main.querySelector('[data-rc-expand]');
+  if (!button) return;
+  const open = rcAllOpen();
+  button.dataset.rcExpand = open ? 'collapse' : 'expand';
+  button.textContent = open ? 'Collapse All' : 'Expand All';
+}
+
 function raceClassStep() {
   const raceOptions = eligibleRaces(state);
   const classOptions = eligibleClasses(state);
@@ -747,6 +790,7 @@ function raceClassStep() {
       <label class="check"><input type="checkbox" data-bind="clubs.vanquisher" ${state.clubs.vanquisher ? 'checked' : ''}> <span>Has access to Club Vanquisher</span></label>
       <label class="check"><input type="checkbox" data-bind="female" ${state.female ? 'checked' : ''}> <span>Female crawler <small class="muted">(for female-only options; these limits are optional, p. 128)</small></span></label>
     </section>
+    ${rcExpandButton([...(chosenRace?.custom ? [['race', chosenRace]] : []), ...raceOptions.map((x) => ['race', x]), ...(chosenClass?.custom ? [['class', chosenClass]] : []), ...classOptions.map((x) => ['class', x])])}
     <section class="panel">
       <div class="panel-head"><h2>Race</h2>${sourceRef('pp. 128-141')}</div>
       <label class="field rc-floor">Floor the Race & Class were chosen on<input data-bind="raceClassFloor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.raceClassFloor)}"><small>Skill-ups logged on earlier floors count before Race/Class bonuses (Level & Skills step).</small></label>
@@ -773,13 +817,26 @@ function raceClassStep() {
   `;
 }
 
+// A Skill's Rank without gear, and whether it's at its Rank limit (Heal's is 1).
+function maxedSkill(name) {
+  const known = allSkills(state).find((x) => x.name.toLowerCase() === name.toLowerCase());
+  const rank = known ? known.rank - (known.gearRanks || 0) : 0;
+  const limit = rankLimit(state, name);
+  return rank >= limit ? { rank, limit } : null;
+}
+
 function skillOptions(selected) {
   const owned = allSkills(state).map((x) => x.name).sort((a, b) => a.localeCompare(b));
   const ownedKeys = new Set(owned.map((x) => x.toLowerCase()));
   const learn = (kind) => skillCatalog.filter((x) => x.kind === kind && !x.custom && !ownedKeys.has(x.name.toLowerCase()));
   const option = (name) => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`;
+  // Skills at their limit can't gain Ranks.
+  const ownedOption = (name) => {
+    const maxed = maxedSkill(name);
+    return maxed ? `<option value="${esc(name)}" disabled>${esc(name)} (Rank ${maxed.limit} maximum)</option>` : option(name);
+  };
   return `<option value="">Choose…</option>
-    <optgroup label="Your Skills & Spells">${owned.map(option).join('')}</optgroup>
+    <optgroup label="Your Skills & Spells">${owned.map(ownedOption).join('')}</optgroup>
     <optgroup label="Learn a new Skill">${learn('skill').map((x) => option(x.name)).join('')}</optgroup>
     <optgroup label="Learn a new Spell">${learn('spell').map((x) => option(x.name)).join('')}</optgroup>`;
 }
@@ -844,6 +901,9 @@ function advancementStep() {
 }
 
 const KIND_LABELS = Object.fromEntries(ITEM_KINDS);
+// Skills a weapon item can attack with.
+const weaponSkillNames = skillCatalog.filter((x) => x.kind === 'skill' && x.attack && !x.custom).map((x) => x.name);
+const weaponSkillOptions = (selected) => `<option value="">Choose a weapon Skill</option>${weaponSkillNames.map((name) => `<option ${selected === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}`;
 const spellNames = skillCatalog.filter((x) => x.kind === 'spell').map((x) => x.name);
 
 // Where a gear item can go: a Gear Slot (bonuses apply), the Inventory or a Hotlist slot.
@@ -868,7 +928,7 @@ function gearLocationOptions(item) {
 const openGear = new Set();
 // The quick-add bar: what's typed so far, kept when the type changes. Its
 // kind is an ITEM_KINDS kind or 'custom' (the full editor, for magic gear).
-const quickGear = { kind: 'item', location: 'inventory', name: '', qty: '1', spell: '', rank: '' };
+const quickGear = { kind: 'item', location: 'inventory', name: '', qty: '1', spell: '', rank: '', weaponSkill: '' };
 const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom…']];
 
 function quickAddPanel() {
@@ -879,7 +939,8 @@ function quickAddPanel() {
     ? field('Spell', `<select name="spell" required><option value="">Choose a Spell</option>${spellNames.map((name) => `<option ${quickGear.spell === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>`, 'quick-name')
       + field('Rank', `<input name="rank" type="number" min="1" max="20" step="1" value="${esc(quickGear.rank)}" required>`, 'quick-qty')
     : field(quickGear.kind === 'custom' ? 'Name <span class="optional">or name it in the editor</span>' : 'Name',
-      `<input name="name" maxlength="80" value="${esc(quickGear.name)}" placeholder="${quickGear.kind === 'potion' ? 'e.g. Healing Potion' : quickGear.kind === 'custom' ? 'e.g. Enchanted Toe Ring' : 'e.g. 50 feet of rope'}" ${quickGear.kind === 'custom' ? '' : 'required'}>`, 'quick-name');
+      `<input name="name" maxlength="80" value="${esc(quickGear.name)}" placeholder="${{ potion: 'e.g. Healing Potion', custom: 'e.g. Enchanted Toe Ring', weapon: 'e.g. Enchanted Axe' }[quickGear.kind] || 'e.g. 50 feet of rope'}" ${quickGear.kind === 'custom' ? '' : 'required'}>`, 'quick-name')
+      + (quickGear.kind === 'weapon' ? field('Weapon Skill', `<select name="weaponSkill" required>${weaponSkillOptions(quickGear.weaponSkill)}</select>`) : '');
   return `<form class="quick-add" data-quick-gear autocomplete="off">
       ${field('Add', `<select name="kind" data-quick-kind>${QUICK_KINDS.map(([kind, label]) => `<option value="${kind}" ${quickGear.kind === kind ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
       ${what}
@@ -893,7 +954,7 @@ function quickAddPanel() {
 // Keep what's typed in the quick-add bar.
 function readQuickGear(form) {
   const data = new FormData(form);
-  for (const key of ['kind', 'location', 'name', 'qty', 'spell', 'rank']) if (data.has(key)) quickGear[key] = String(data.get(key));
+  for (const key of ['kind', 'location', 'name', 'qty', 'spell', 'rank', 'weaponSkill']) if (data.has(key)) quickGear[key] = String(data.get(key));
   if (!QUICK_KINDS.some(([kind]) => kind === quickGear.kind)) quickGear.kind = 'item';
 }
 
@@ -941,7 +1002,9 @@ function gearCard(item, i) {
     ${head}
     <p class="muted micro gear-status">${equipped ? `Equipped · ${esc(slot.label)} · bonuses apply` : 'Not equipped · no bonuses'}</p>
     <div class="fields gear-fields">
+      ${field('Type', `<select data-bind="gear.${i}.kind" data-rerender="true">${ITEM_KINDS.map(([kind, label]) => `<option value="${kind}" ${item.kind === kind ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
       ${nameFields}
+      ${item.kind === 'weapon' ? field('Weapon Skill', `<select data-bind="gear.${i}.weaponSkill" data-rerender="true">${weaponSkillOptions(item.weaponSkill)}</select>`, 'gear-wide') : ''}
       ${item.location === 'holding' ? `<label class="check gear-check"><input type="checkbox" data-bind="gear.${i}.twoHanded" ${item.twoHanded ? 'checked' : ''}> Limitation: Two-Handed (uses both hands)</label>` : ''}
       ${item.location === 'accessories' ? field('Accessory type', `<select data-bind="gear.${i}.accessoryType" data-rerender="true">${ACCESSORY_TYPES.map(([v, label]) => `<option value="${v}" ${item.accessoryType === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`) : ''}
     </div>
@@ -1150,6 +1213,8 @@ main.addEventListener('click', async (event) => {
   }
   if (action?.dataset.action === 'add-skill-up') {
     if (!skillUpDraft.skill) return setNotice('Choose a Skill or Spell to log.');
+    const maxed = maxedSkill(skillUpDraft.skill);
+    if (maxed) return setNotice(`${skillUpDraft.skill} is already at its Rank ${maxed.limit} maximum.`);
     if (!(Number(skillUpDraft.ranks) >= 1)) return setNotice('Ranks gained must be 1 or more.');
     state.skillUps = [...(state.skillUps || []), { ...skillUpDraft, floor: skillUpDraft.floor || state.floor }];
     skillUpDraft = { ...skillUpDraft, skill: '', ranks: '1', note: '' };
@@ -1255,6 +1320,7 @@ main.addEventListener('click', async (event) => {
     return renderMain();
   }
 
+  if (raceClassClick(event)) return;
   if (gearClick(event)) return;
 
   const addItem = event.target.closest('[data-add-item]');
@@ -1414,6 +1480,28 @@ const workshopContext = {
 };
 
 const gearById = (id) => state.gear.find((x) => x.id === id);
+
+// Race & Class step: Show more, Expand All / Collapse All; true if handled.
+function raceClassClick(event) {
+  const desc = event.target.closest('[data-rc-desc]');
+  if (desc) {
+    const key = desc.dataset.rcDesc;
+    if (rcOpen.descriptions.has(key)) rcOpen.descriptions.delete(key);
+    else rcOpen.descriptions.add(key);
+    renderMain();
+    return true;
+  }
+  const expand = event.target.closest('[data-rc-expand]');
+  if (!expand) return false;
+  const open = expand.dataset.rcExpand === 'expand';
+  rcCards.forEach(([key]) => {
+    rcOpen.benefits[open ? 'add' : 'delete'](key);
+    rcOpen.descriptions[open ? 'add' : 'delete'](key);
+  });
+  renderMain();
+  main.querySelector('[data-rc-expand]')?.focus();
+  return true;
+}
 
 // Equipment step buttons; true if handled.
 function gearClick(event) {
@@ -1657,14 +1745,18 @@ function quickSubmit(event) {
     const spellItem = kind === 'scroll' || kind === 'spellbook';
     if (spellItem && !(quickGear.spell && Number(quickGear.rank) >= 1)) return setNotice('Choose the Spell and its Rank.'), true;
     if (!spellItem && kind !== 'custom' && !name) return true;
+    if (kind === 'weapon' && !quickGear.weaponSkill) return setNotice('Choose the weapon Skill it attacks with.'), true;
     const item = normalizeGearItem({
       ...newGearItem(kind === 'custom' ? 'item' : kind), qty, location,
       ...(spellItem ? { spell: quickGear.spell, rank: String(Math.trunc(Number(quickGear.rank))) } : { name }),
+      ...(kind === 'weapon' ? { weaponSkill: quickGear.weaponSkill } : {}),
     });
     state.gear.push(item);
     if (kind === 'custom') openGear.add(item.id);
     Object.assign(quickGear, { name: '', qty: '1', spell: '', rank: '' });
-    setNotice(`Added ${qty > 1 ? `${qty} × ` : ''}${gearName(item) || 'a custom item'}${kind === 'custom' ? '. Fill in its details below.' : '.'}`);
+    const ready = item.location === 'holding' || item.location.startsWith('hotlist:');
+    const after = { custom: ' Fill in its details below.', weapon: ready ? ' It’s in your Attacks.' : ' It’s listed in your Attacks; tick it there to put it on the sheet, or move it to Holding or the Hotlist.' }[kind] || '';
+    setNotice(`Added ${qty > 1 ? `${qty} × ` : ''}${gearName(item) || 'a custom item'}.${after}`, after ? 5000 : undefined);
   }
   saveState();
   render();
@@ -1794,16 +1886,21 @@ main.addEventListener('change', (event) => {
   if (target.matches('[data-attack-row]')) {
     const name = target.dataset.attackRow;
     const set = new Set(state.attackSheet || []);
+    const off = new Set(state.attackOff || []);
     if (target.checked) {
-      const maxOptional = state.combat ? 4 : 5;
-      if (set.size >= maxOptional) {
+      if (tickedAttacks(state).size >= 5) {
         target.checked = false;
-        setNotice('The front-page Attacks table has five rows, and your chosen combat option already uses one.');
+        setNotice('The front-page Attacks table has five rows. Untick one first.');
         return;
       }
       set.add(name);
-    } else set.delete(name);
+      off.delete(name);
+    } else {
+      set.delete(name);
+      off.add(name); // only matters for weapons held or in the Hotlist
+    }
     state.attackSheet = [...set];
+    state.attackOff = [...off];
     saveState();
     renderNav(); renderSummary();
     return;
@@ -1845,6 +1942,16 @@ function clearHotlistDragStyles() {
     row.classList.remove('drag-over', 'dragging');
   });
 }
+
+// <details> toggle doesn't bubble, so listen while capturing.
+main.addEventListener('toggle', (event) => {
+  const key = event.target.dataset?.rcBenefits;
+  if (!key) return;
+  const had = rcOpen.benefits.has(key);
+  if (event.target.open === had) return;
+  rcOpen.benefits[event.target.open ? 'add' : 'delete'](key);
+  labelRcExpand();
+}, true);
 
 main.addEventListener('dragstart', (event) => {
   const row = event.target.closest('.hotlist-row[draggable="true"]');

@@ -51,6 +51,21 @@ class AdvancementTests(unittest.TestCase):
         self.assertEqual(self.val(f"rank({state}, 'Club')"), 15)
         self.assertEqual(self.val(f"skillUpReport({state})[0]"), {"skill": "Club", "before": 3, "after": 15, "wasted": 2, "cap": 15})
 
+    def test_heal_is_rank_one_maximum(self) -> None:
+        # Heal: "Limitations: Rank 1 maximum" (p. 206), before and after Race & Class selection.
+        for floor in (1, 4):
+            state = f"crawler({{ floor: '4', race: 'Human', skillUps: [up('Heal', 3, {floor})] }})"
+            self.assertEqual(self.val(f"rank({state}, 'Heal')"), 1)
+            self.assertEqual(self.val(f"skillUpReport({state})[0]"), {"skill": "Heal", "before": 1, "after": 1, "wasted": 3, "cap": 1})
+        self.assertEqual(self.val("rankLimit(crawler(), 'Heal')"), 1)
+        # Even a Race that lets every Skill reach Rank 20.
+        self.js.eval("""var all20 = normalizeBuild({ kind: 'race', name: 'Overachiever', benefits: [{ option: 'rank20All' }] });""")
+        self.assertEqual(self.val("rankLimit(crawler({ customRace: { id: 1, build: all20 }, race: 'Overachiever' }), 'Heal')"), 1)
+
+    def test_custom_builds_cannot_raise_heal(self) -> None:
+        issues = self.val("buildErrors(normalizeBuild({ kind: 'race', name: 'Medic', benefits: [{ option: 'skill', skill: 'Heal', amount: 1 }] }))")
+        self.assertTrue(any("Heal is Rank 1 maximum" in x for x in issues), issues)
+
     def test_race_or_class_can_allow_rank_twenty(self) -> None:
         # Sasquatch: "Smush Skill can be raised to Rank 20" (Sasquatch also needs Smush 5+).
         state = "crawler({ combatType: 'hand', combat: 'Foot Soldier', race: 'Sasquatch', floor: '4', skillUps: [up('Smush', 2, 2), up('Smush', 20, 3)] })"

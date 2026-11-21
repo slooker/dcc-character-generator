@@ -83,7 +83,7 @@ function upgradeNotes(skill) {
 }
 
 function attackEffects(attack) {
-  const parts = [...bookBasics(attack.name, attack), attack.effect];
+  const parts = [...bookBasics(attack.skill || attack.name, attack), attack.effect];
   if (attack.notes) parts.push(compact(attack.notes, 75));
   if (attack.favor) parts.push(`AI Favor ${attack.favor} (conditional)`);
   return compact(parts.filter(Boolean).join('; '), 160);

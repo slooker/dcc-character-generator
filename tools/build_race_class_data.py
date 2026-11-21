@@ -67,6 +67,9 @@ CLASS_REQUIREMENTS = {
     'Identity Thief': [NO_VANQUISHER],
 }
 
+# Headings printed with a typo in the PDF.
+NAME_FIXES = {'PHysicker': 'Physicker'}
+
 RESTRICTION = re.compile(r'(?i)cannot choose|must worship')
 
 
@@ -75,11 +78,12 @@ def build_entry(entry, requirements, catalog):
     if entry['kind'] == 'class' and entry['earth']:
         requires.insert(0, {'type': 'earthRace'})
     out = {
-        'name': entry['name'],
+        'name': NAME_FIXES.get(entry['name'], entry['name']),
         'page': entry['page'],
         'earth': entry['earth'],
         'requires': requires,
         'prerequisite': entry['prerequisite'],
+        'description': entry.get('description', ''),
         'benefits': entry['benefits'],
         # One list of effects per benefit bullet; [] means reference text only.
         'effects': [parse_bullet(b, catalog) for b in entry['benefits']],

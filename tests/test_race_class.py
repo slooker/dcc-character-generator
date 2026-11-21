@@ -60,6 +60,22 @@ class RaceClassEligibilityTests(unittest.TestCase):
         self.assertEqual(self.js.eval("races.filter((x) => !x.earth).length"), 7)
         self.assertEqual(self.js.eval("classes.filter((x) => !x.classTypes.length).length"), 0)
 
+    def test_physicker_is_spelled_right(self) -> None:
+        # The PDF heading reads "PHysicker".
+        self.assertEqual(self.js.eval("classes.filter((x) => /^physicker$/i.test(x.name)).map((x) => x.name).join()"), "Physicker")
+        self.assertEqual(self.js.eval("normalizeState({ className: 'PHysicker' }).className"), "Physicker")
+
+    def test_every_book_entry_has_a_clean_description(self) -> None:
+        entries = json.loads(self.js.eval("JSON.stringify([...races, ...classes].map((x) => [x.name, x.description]))"))
+        for name, text in entries:
+            self.assertGreater(len(text), 60, name)
+            self.assertNotRegex(text, r"Class Types?:|Prerequisites?:|following benefits:|\w- \w", name)
+        described = dict(entries)
+        self.assertTrue(described["Infernocrafter"].startswith("Lighting stuff on fire is fun."))
+        self.assertTrue(described["Artist Alley Mogul"].startswith("This Charisma and Intelligence-based Class"))  # no "Merchant"
+        self.assertIn("big-budget blockbuster movies", described["Straight-to-DVD Action Hero"])
+        self.assertIn("most-loved occupations", described["NecroBard"])
+
     def test_starting_crawler_sees_only_unlimited_races(self) -> None:
         available = self.eligible("race", "humanCrawler()")
         self.assertIn("Human", available)

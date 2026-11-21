@@ -23,6 +23,9 @@
 // races-classes.js, so rules.js applies it like any other.
 import { races, classes, skillCatalog } from './races-classes.js';
 
+// Skills and Spells the book caps lower than any Rank limit: Heal is
+// "Limitations: Rank 1 maximum" (p. 206). Nothing raises these.
+export const MAX_RANK = { heal: 1 };
 export const BUILD_POINTS = { race: 25, class: 30 };
 export const MAX_DETRIMENT_POINTS = 5;
 export const PASSIVE_RANK_LIMIT = 5;
@@ -384,6 +387,7 @@ function rowIssues(row, option, label, kind) {
     const name = String(row.skill || '').trim();
     if (!name) out.push(`${label}: choose a Skill.`);
     else if (option.id !== 'unlearnable' && !bookSkill(name)) out.push(`${label}: “${name}” isn’t a Skill or Spell in the book.`);
+    else if (MAX_RANK[name.toLowerCase()]) out.push(`${label}: ${canonical(name)} is Rank ${MAX_RANK[name.toLowerCase()]} maximum, so it can’t gain Ranks or a higher limit.`);
   }
   if (fields.includes('skills')) {
     const names = row.skills.map((x) => x.trim()).filter(Boolean);

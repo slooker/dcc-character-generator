@@ -3,6 +3,22 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.12',
+    date: '2026-11-20',
+    title: 'Attacks from your Skills and weapons, Heal at Rank 1, Race & Class descriptions',
+    items: [
+      'The Attacks list shows every attack Skill and Spell you have now, at its current Rank, including ones from Race, Class, the Skill & Spell log and spellbooks',
+      'New Weapon item type: link it to a weapon Skill and it can fill an Attack row. Weapons you’re holding or have in the Hotlist are always in your Attacks unless you untick them',
+      'Change an item’s type (Item, Weapon, Potion, Scroll, Spellbook) in its editor',
+      'Added damage, range and Mana for Bite and 19 attack Spells that were missing',
+      'Heal can’t be levelled up: it’s Rank 1 maximum (p. 206). Skills already at their Rank limit are greyed out in the Skill & Spell log',
+      'Custom Races and Classes can’t add Ranks to Heal or raise its limit',
+      'Race and Class cards show a one-line description with Show more',
+      'Expand All / Collapse All button that stays in view on the Race & Class step',
+      'Fixed the spelling of the Physicker Class (the book’s heading reads “PHysicker”)',
+    ],
+  },
+  {
     version: '0.11',
     date: '2026-11-01',
     title: 'Opening saved crawlers',

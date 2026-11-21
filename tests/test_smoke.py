@@ -207,6 +207,26 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn("warnIfHotlistCollision(target.value, `item:${item.id}`)", app)
         self.assertIn("target.value = state[target.dataset.bind]", app)
 
+    def test_race_class_cards_have_show_more_and_expand_all(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        self.assertIn("${open ? 'Show less' : 'Show more'}</button></p>", app)
+        self.assertIn("${open ? 'Collapse All' : 'Expand All'}</button></div>", app)
+        self.assertIn("main.addEventListener('toggle'", app)
+        css = (DIST / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".rc-expand{position:sticky;top:12px;", css)
+        # The button keeps its own height inside the zero-height sticky bar, so its hover box covers the label.
+        self.assertIn("height:0;display:flex;justify-content:flex-end;align-items:flex-start;", css)
+        self.assertIn(".rc-desc span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}", css)
+
+    def test_item_editor_can_change_type(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        self.assertIn("field('Type', `<select data-bind=\"gear.${i}.kind\" data-rerender=\"true\">", app)
+
+    def test_skill_up_list_disables_skills_at_their_limit(self) -> None:
+        app = (DIST / "app.js").read_text(encoding="utf-8")
+        self.assertIn("return maxed ? `<option value=\"${esc(name)}\" disabled>${esc(name)} (Rank ${maxed.limit} maximum)</option>` : option(name);", app)
+        self.assertIn("is already at its Rank ${maxed.limit} maximum.", app)
+
     def test_open_goes_to_identity_with_a_banner(self) -> None:
         app = (DIST / "app.js").read_text(encoding="utf-8")
         handler = app[app.index("} else if (target.dataset.openCharacter) {"):app.index("} else if (target.dataset.deleteCharacter) {")]

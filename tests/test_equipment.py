@@ -137,6 +137,35 @@ class EquipmentRulesTests(unittest.TestCase):
         self.assertEqual(state["gear"][0]["location"], "inventory")
         self.assertEqual(self.val("normalizeState({ name: 'Older' }).gear"), [])
 
+    def test_attacks_follow_current_skills_and_weapon_items(self) -> None:
+        state = """crawler({ skillUps: [{ skill: 'Club', ranks: '4', floor: '1' }, { skill: 'Magic Missile', ranks: '1', floor: '1' }],
+          gear: [gear('weapon', { name: 'Enchanted Axe', weaponSkill: 'Axe', location: 'hotlist:3' }),
+                 gear('weapon', { name: 'Big Club', weaponSkill: 'Club', location: 'inventory' })] })"""
+        rows = self.val(f"allAttacks({state}).map((x) => [x.label, x.rank, x.dice, x.source === 'Gear' ? x.location : ''])")
+        self.assertEqual(rows, [
+            ["Unarmed Combat", 3, "1d4", ""],
+            ["Club", 7, "1d6", ""],             # Club 3 + 4 from the Skill & Spell log
+            ["Magic Missile", 1, "1d4", ""],    # learned later
+            ["Enchanted Axe (Axe)", 0, "1d6", "hotlist:3"],  # Axe isn't known yet
+            ["Big Club (Club)", 7, "1d6", "inventory"],
+        ])
+        # Weapons in Holding or the Hotlist are on the sheet unless unticked; others need ticking.
+        self.assertEqual(self.val(f"attackRowsForSheet({state}).map((x) => x.label)"), ["Club", "Enchanted Axe (Axe)"])
+
+    def test_ready_weapons_can_be_unticked_and_others_ticked(self) -> None:
+        self.js.eval("""var w = crawler({ gear: [gear('weapon', { id: 'axe', name: 'Axe of Hot', weaponSkill: 'Axe', location: 'hotlist:2' }),
+          gear('weapon', { id: 'bat', name: 'Bat', weaponSkill: 'Club', location: 'holding' }),
+          gear('weapon', { id: 'bow', name: 'Spare Bow', weaponSkill: 'Bow', location: 'inventory' })] });""")
+        self.assertEqual(self.val("attackRowsForSheet(w).map((x) => x.label)"), ["Club", "Axe of Hot (Axe)", "Bat (Club)"])
+        self.js.eval("w.attackOff = ['gear:axe']; w.attackSheet = ['gear:bow'];")
+        self.assertEqual(self.val("attackRowsForSheet(w).map((x) => x.label)"), ["Club", "Bat (Club)", "Spare Bow (Bow)"])
+        # Saved crawlers without attackOff load with it empty.
+        self.assertEqual(self.val("normalizeState({ name: 'Old' }).attackOff"), [])
+
+    def test_weapons_need_a_weapon_skill(self) -> None:
+        self.assertIn("Choose the weapon Skill “Stick” attacks with.", self.errors("gear('weapon', { name: 'Stick' })"))
+        self.assertEqual(self.errors("gear('weapon', { name: 'Stick', weaponSkill: 'Club' })"), [])
+
     def test_portraits_are_small_images_only(self) -> None:
         ok = "data:image/jpeg;base64,AAAA"
         self.assertEqual(self.val(f"normalizeState({{ portrait: '{ok}' }}).portrait"), ok)

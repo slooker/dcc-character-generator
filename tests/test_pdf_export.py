@@ -234,6 +234,26 @@ class CustomRaceAbilityTests(unittest.TestCase):
         self.assertIn("• A Climb Movement: automatically climb most surfaces, even ceilings", text)
 
 
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class WeaponItemAttackTests(unittest.TestCase):
+    def test_ticked_weapon_item_fills_an_attack_row(self) -> None:
+        fields = export_fields(
+            """(() => {
+              const s = initialState(); s.name = 'Tess'; s.kind = 'human';
+              s.backgrounds = backgrounds.human.map((st) => ({ option: 0, picks: st.options[0].skills.slice(0, 2).map((x) => x.name) }));
+              s.combatType = 'weapon'; s.combat = 'Club';
+              s.stats = { Str: '6', Int: '5', Con: '4', Dex: '3', Cha: '2' };
+              s.skillUps = [{ skill: 'Club', ranks: '2', floor: '1' }];
+              const axe = normalizeGearItem({ ...newGearItem('weapon'), name: 'Big Club', weaponSkill: 'Club', location: 'hotlist:2' });
+              s.gear = [axe]; s.attackSheet = [`gear:${axe.id}`];
+              return s;
+            })()"""
+        )
+        rows = [(fields.get(n), fields.get(r), fields.get(d)) for n, r, d in
+                (("Text Field 55", "Text Field 551", "Text Field 53"), ("Text Field 61", "Text Field 57", "Text Field 58"))]
+        self.assertEqual(rows, [("Club", "5", "1d6"), ("Big Club (Club)", "5", "1d6")])
+
+
 # A 2 x 2 white JPEG.
 TINY_JPEG = ("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/"
               "wAALCAACAAIBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")

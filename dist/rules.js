@@ -1,6 +1,6 @@
 import { attacks, utilitySkills, damageEffects } from './details.js';
 import { races, classes, skillCatalog } from './races-classes.js';
-import { buildEntry, buildErrors, normalizeBuild } from './builds.js';
+import { buildEntry, buildErrors, normalizeBuild, MAX_RANK } from './builds.js';
 import {
   gearItems, gearName, gearStatBonuses, gearSkillBonuses, gearDr, equipmentErrors, normalizeGearItem, bonusText,
 } from './equipment.js';
@@ -239,6 +239,8 @@ export function initialState() {
     spellSlot: '',
     potionsSlot: '',
     attackSheet: [],
+    // Weapons held or in the Hotlist that the player took off the Attack rows.
+    attackOff: [],
     race: '',
     className: '',
     raceChoices: {},
@@ -256,6 +258,8 @@ export function initialState() {
   };
 }
 
+const CLASS_RENAMES = { PHysicker: 'Physicker' };
+
 export function normalizeState(raw) {
   const base = initialState();
   if (!raw || typeof raw !== 'object') return base;
@@ -272,6 +276,7 @@ export function normalizeState(raw) {
     : base.backgrounds;
   merged.items = Array.isArray(raw.items) && raw.items.length ? raw.items : base.items;
   merged.attackSheet = Array.isArray(raw.attackSheet) ? raw.attackSheet : [];
+  merged.attackOff = Array.isArray(raw.attackOff) ? raw.attackOff : [];
   merged.clubs = { ...base.clubs, ...(raw.clubs || {}) };
   merged.raceChoices = raw.raceChoices && typeof raw.raceChoices === 'object' ? raw.raceChoices : {};
   merged.classChoices = raw.classChoices && typeof raw.classChoices === 'object' ? raw.classChoices : {};
@@ -283,6 +288,8 @@ export function normalizeState(raw) {
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
   merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
   merged.portrait = validPortrait(raw.portrait) ? raw.portrait : '';
+  // Class names corrected since a crawler was saved.
+  if (CLASS_RENAMES[merged.className]) merged.className = CLASS_RENAMES[merged.className];
   return merged;
 }
 
@@ -336,21 +343,59 @@ export function baseSkills(state) {
   return skills;
 }
 
+// Attack data for a Skill: its own, or a custom Skill's parenthesized one
+// ("Creepy Chains (Club)" attacks as a Club).
+export function attackData(name) {
+  const entry = catalogByKey.get(String(name || '').toLowerCase());
+  const uses = entry?.custom ? entry.name.match(/\((.+)\)$/)?.[1] : null;
+  return attacks[uses || entry?.name || name] || null;
+}
+
+// Every attack the crawler has now: attack Skills and Spells at their current
+// Ranks (starting and chosen combat first), then items linked to a weapon
+// Skill, which attack at that Skill's Rank. Items use the key "gear:<id>".
 export function allAttacks(state) {
-  const list = [...combatSkills(state), ...selectedSkills(state).filter((x) => attacks[x.name])];
-  const seen = new Set();
-  return list.filter((x) => {
-    if (seen.has(x.name)) return false;
-    seen.add(x.name);
-    return true;
-  });
+  const known = allSkills(state);
+  const first = combatSkills(state).map((x) => x.name);
+  const order = (x) => (first.includes(x.name) ? first.indexOf(x.name) : first.length);
+  const skills = known
+    .filter((x) => attackData(x.name) && x.rank > 0)
+    .sort((a, b) => order(a) - order(b))
+    .map((x) => ({ ...x, ...attackData(x.name), name: x.name, label: x.label || x.name, rank: x.rank, skill: x.name }));
+  const items = gearItems(state)
+    .filter((item) => item.kind === 'weapon' && attackData(item.weaponSkill))
+    .map((item) => {
+      const skill = known.find((x) => x.name.toLowerCase() === item.weaponSkill.toLowerCase());
+      return {
+        ...attackData(item.weaponSkill),
+        name: `gear:${item.id}`,
+        label: `${gearName(item)} (${item.weaponSkill})`,
+        skill: item.weaponSkill,
+        rank: skill?.rank || 0,
+        source: 'Gear',
+        location: item.location,
+      };
+    });
+  return [...skills, ...items];
+}
+
+// Weapons held or in the Hotlist are ready to swing, so they're on the sheet
+// unless the player unticked them (state.attackOff).
+export function readyWeapon(attack) {
+  return attack.source === 'Gear' && (attack.location === 'holding' || String(attack.location || '').startsWith('hotlist:'));
+}
+
+// Names of the attacks ticked for the sheet's Attack rows.
+export function tickedAttacks(state, available = allAttacks(state)) {
+  const off = new Set(state.attackOff || []);
+  const mandatory = state.combat && attacks[state.combat] ? [state.combat] : [];
+  return new Set([...mandatory, ...(state.attackSheet || []), ...available.filter((x) => readyWeapon(x) && !off.has(x.name)).map((x) => x.name)]);
 }
 
 export function attackRowsForSheet(state) {
-  const attacksAvailable = allAttacks(state);
-  const mandatory = state.combat && attacks[state.combat] ? [state.combat] : [];
-  const selected = new Set([...mandatory, ...(state.attackSheet || [])]);
-  return attacksAvailable.filter((x) => selected.has(x.name)).slice(0, 5);
+  const available = allAttacks(state);
+  const ticked = tickedAttacks(state, available);
+  return available.filter((x) => ticked.has(x.name)).slice(0, 5);
 }
 
 // Race & Class selection (dcc-races.pdf p. 128 onward, dcc-classes.pdf p. 142
@@ -398,6 +443,7 @@ export function achievementList(state) {
 // totals cap at Rank 10 during selection. Stat changes go to the Unenhanced
 // Stat; only equipment changes Enhanced.
 export const SELECTION_RANK_CAP = 10;
+const hardMax = (name) => MAX_RANK[String(name).toLowerCase()] ?? Infinity;
 const catalogByKey = new Map(skillCatalog.map((x) => [x.name.toLowerCase(), x]));
 
 // Each effect of an entry with its choice key ("bullet.effect") and the
@@ -513,6 +559,7 @@ function beforeSelection(state, entry) {
 
 export function rankLimit(state, name) {
   const key = name.toLowerCase();
+  if (MAX_RANK[key]) return MAX_RANK[key];
   const allows = raceClassEffects(state).some((effect) => {
     if (effect.type === 'rankLimit') return effect.all || effect.skills.some((x) => x.toLowerCase() === key);
     if (effect.type === 'rankLimitPick') return pickedSkills(effect).some((x) => x.toLowerCase() === key);
@@ -550,7 +597,7 @@ function computeSkills(state, { raceName = state.race, includeRace = true, inclu
   const ups = (state.skillUps || []).map((entry, index) => ({ entry, index }));
   const early = ups.filter(({ entry }) => beforeSelection(state, entry));
   const late = ups.filter(({ entry }) => !beforeSelection(state, entry));
-  applySkillUps(state, skills, early, () => RANK_CAP, report);
+  applySkillUps(state, skills, early, (name) => Math.min(RANK_CAP, hardMax(name)), report);
 
   const preRank = new Map([...skills].map(([key, skill]) => [key, skill.rank]));
   const race = includeRace ? findRace(raceName, state) : null;
@@ -559,14 +606,15 @@ function computeSkills(state, { raceName = state.race, includeRace = true, inclu
   if (cls) applyEntrySkills(skills, cls, state.classChoices, 'Class');
   skills.forEach((skill, key) => {
     const raw = skill.rank;
-    if (raw > SELECTION_RANK_CAP) skill.rank = Math.max(preRank.get(key) || 0, SELECTION_RANK_CAP);
+    const cap = Math.min(SELECTION_RANK_CAP, hardMax(skill.name));
+    if (raw > cap) skill.rank = Math.max(Math.min(preRank.get(key) || 0, hardMax(skill.name)), cap);
     skill.wasted = Math.max(0, raw - skill.rank);
   });
 
   if (includeAfter) applySkillUps(state, skills, late, (name) => rankLimit(state, name), report);
   const list = [...skills.values()].map((skill) => {
     const notes = [skill.notes];
-    if (skill.wasted) notes.push(`${skill.wasted} Race/Class Rank${skill.wasted === 1 ? '' : 's'} over the Rank ${SELECTION_RANK_CAP} selection cap wasted.`);
+    if (skill.wasted) notes.push(`${skill.wasted} Race/Class Rank${skill.wasted === 1 ? '' : 's'} over the Rank ${Math.min(SELECTION_RANK_CAP, hardMax(skill.name))} ${hardMax(skill.name) < SELECTION_RANK_CAP ? 'maximum' : 'selection cap'} wasted.`);
     if (skill.rank > RANK_CAP && currentFloor(state) < HIGH_RANK_FLOOR) notes.push(`Ranks above ${RANK_CAP} come online on Floor ${HIGH_RANK_FLOOR}.`);
     return { ...skill, source: skill.sources.join('; '), notes: notes.filter(Boolean).join(' ') };
   });
