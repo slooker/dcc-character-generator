@@ -3,6 +3,14 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.13',
+    date: '2026-11-20',
+    title: 'Limited Races unlock from earlier skill-ups',
+    items: [
+      'Skill Ranks logged on floors before your Race & Class floor now count toward prerequisites before you’ve picked anything, so Races like Obsidian Butterfly (Rank 5+ in an Edged Weapon) appear when you qualify',
+    ],
+  },
+  {
     version: '0.12',
     date: '2026-11-20',
     title: 'Attacks from your Skills and weapons, Heal at Rank 1, Race & Class descriptions',

@@ -553,8 +553,10 @@ export function level(state) {
 }
 
 // Skill-ups logged before the Race/Class floor happen before selection.
-function beforeSelection(state, entry) {
-  return Boolean(state.race || state.className) && positiveInt(entry.floor, 1) < raceClassFloor(state);
+// `selecting` treats the Race/Class as being chosen now, so prerequisite
+// checks count earlier skill-ups before anything has been picked.
+function beforeSelection(state, entry, selecting = false) {
+  return Boolean(selecting || state.race || state.className) && positiveInt(entry.floor, 1) < raceClassFloor(state);
 }
 
 export function rankLimit(state, name) {
@@ -591,12 +593,12 @@ function applySkillUps(state, skills, entries, capFor, report) {
 // Race/Class floor (cap 15), Race then Class bonuses (cap 10 during selection;
 // a Skill already at 10+ gains nothing), then later skill-ups (cap 15/20).
 // `raceName` and the include flags let prerequisites check earlier moments.
-function computeSkills(state, { raceName = state.race, includeRace = true, includeClass = true, includeAfter = true } = {}) {
+function computeSkills(state, { raceName = state.race, includeRace = true, includeClass = true, includeAfter = true, selecting = false } = {}) {
   const skills = new Map(baseSkills(state).map((skill) => [skill.name.toLowerCase(), { ...skill, sources: [skill.source].filter(Boolean) }]));
   const report = [];
   const ups = (state.skillUps || []).map((entry, index) => ({ entry, index }));
-  const early = ups.filter(({ entry }) => beforeSelection(state, entry));
-  const late = ups.filter(({ entry }) => !beforeSelection(state, entry));
+  const early = ups.filter(({ entry }) => beforeSelection(state, entry, selecting));
+  const late = ups.filter(({ entry }) => !beforeSelection(state, entry, selecting));
   applySkillUps(state, skills, early, (name) => Math.min(RANK_CAP, hardMax(name)), report);
 
   const preRank = new Map([...skills].map(([key, skill]) => [key, skill.rank]));
@@ -802,7 +804,7 @@ export function raceClassRequirementIssues(state, entry, raceName = state.race) 
   if (!entry) return ['an entry from the supplied Race/Class lists'];
   // Race comes before Class (p. 128): Races check base Skills; Classes check
   // Skills after that Race's bonuses.
-  const skills = skillsWithRaceClass(state, { raceName, includeRace: !isRaceEntry(entry), includeClass: false, includeAfter: false });
+  const skills = skillsWithRaceClass(state, { raceName, includeRace: !isRaceEntry(entry), includeClass: false, includeAfter: false, selecting: true });
   const race = raceContext(state, raceName);
   return entry.requires.map((x) => requirementIssue(state, x, skills, race)).filter(Boolean);
 }

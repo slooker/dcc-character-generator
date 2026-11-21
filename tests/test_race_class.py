@@ -85,6 +85,13 @@ class RaceClassEligibilityTests(unittest.TestCase):
         for name in ("Amazonian", "Cat", "Obsidian Butterfly", "Sasquatch", "Bune", "Grulke", "Hobgoblin"):
             self.assertNotIn(name, available)
 
+    def test_earlier_skill_ups_unlock_limited_races_before_one_is_chosen(self) -> None:
+        # Dagger Rank 3 from combat + 2 Ranks on Floor 2 = Rank 5, an Edged Weapon (p. 136).
+        up = "{ skill: 'Dagger', ranks: '2', floor: '%s', how: 'Training', note: '' }"
+        self.assertIn("Obsidian Butterfly", self.eligible("race", f"humanCrawler({{ combat: 'Dagger', floor: '3', skillUps: [{up % 2}] }})"))
+        # Ranks earned on the selection floor itself come after the Race is chosen.
+        self.assertNotIn("Obsidian Butterfly", self.eligible("race", f"humanCrawler({{ combat: 'Dagger', floor: '3', skillUps: [{up % 3}] }})"))
+
     def test_popularity_and_achievement_unlock_limited_options(self) -> None:
         self.assertIn("Bune", self.eligible("race", "humanCrawler({ popularity: '3' })"))
         self.assertNotIn("Bune", self.eligible("race", "humanCrawler({ popularity: '2' })"))
