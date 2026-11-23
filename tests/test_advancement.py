@@ -95,6 +95,18 @@ class AdvancementTests(unittest.TestCase):
         bad = self.val("advancementErrors(crawler({ skillUps: [up('Not A Skill', 1, 1)] }))")
         self.assertTrue(any("choose a Skill or Spell" in x for x in bad), bad)
 
+    def test_skill_up_can_add_a_custom_skill(self) -> None:
+        # An Earth hobby potion's Skill isn't in the book; later skill-ups add to it.
+        custom = "{ ...up('Competitive Yo-Yo', 2, 1), custom: { stat: 'Dex', check: 'Opposed', description: 'Walk the dog.' } }"
+        state = f"crawler({{ skillUps: [{custom}, up('competitive yo-yo', 3, 2)] }})"
+        skill = self.val(f"allSkills({state}).find((x) => x.name === 'Competitive Yo-Yo')")
+        self.assertEqual((skill["rank"], skill["stat"], skill["check"]), (5, "Dex", "Opposed"))
+        self.assertIn("Walk the dog.", skill["notes"])
+        self.assertEqual(self.val(f"advancementErrors({state})"), [])
+        # A custom entry with a book name is the book's Skill.
+        book = "crawler({ skillUps: [{ ...up('Lockpicking', 2, 1), custom: { stat: 'Cha' } }] })"
+        self.assertEqual(self.val(f"allSkills({book}).find((x) => x.name === 'Lockpicking').stat"), "Dex")
+
     def test_earlier_skill_ups_unlock_prerequisites(self) -> None:
         # Monster Truck Driver needs Driving 5+.
         self.assertNotIn("Monster Truck Driver", self.val("eligibleClasses(crawler()).map((x) => x.name)"))

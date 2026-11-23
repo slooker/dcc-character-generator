@@ -3,6 +3,15 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.15',
+    date: '2026-11-23',
+    title: 'Custom Skills',
+    items: [
+      'The Skill & Spell log has a Custom Skill… option for Skills the book doesn’t list, like the random one an Earth hobby potion gives: name it, pick its Stat and Skill type (Opposed, Unopposed or Passive) and describe what it does',
+      'Custom Skills appear on the sheet with their Stat, Skill type and description; log more Ranks later by picking them under Your Skills & Spells',
+    ],
+  },
+  {
     version: '0.14',
     date: '2026-11-22',
     title: 'Readable attacks on the sheet',

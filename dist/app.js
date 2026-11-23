@@ -5,7 +5,7 @@ import {
   stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
-  skillUpReport, levelPoints, rankLimit, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
+  skillUpReport, levelPoints, rankLimit, CUSTOM_SKILL_CHECKS, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
   PORTRAIT_MAX_UPLOAD, PORTRAIT_MAX_CHARS,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
@@ -48,7 +48,9 @@ let draggedHotlistSlot = null;
 let touchHotlistDrag = null;
 // Unsaved "next level" and "new skill-up" forms on the Level & Skills step.
 let levelDraft = { floor: '', stats: {} };
-let skillUpDraft = { skill: '', ranks: '1', floor: '', how: 'Skill Advancement Check', note: '' };
+let skillUpDraft = { skill: '', ranks: '1', floor: '', how: 'Skill Advancement Check', note: '', customName: '', customStat: 'None', customCheck: 'Unopposed', customDescription: '' };
+// The draft's Skill select value for a Skill that isn't in the book.
+const CUSTOM_SKILL = '__custom__';
 const SKILL_UP_METHODS = ['Skill Advancement Check', 'Training', 'Potion or item', 'Other'];
 
 const $ = (selector) => document.querySelector(selector);
@@ -825,7 +827,7 @@ function maxedSkill(name) {
   return rank >= limit ? { rank, limit } : null;
 }
 
-function skillOptions(selected) {
+function skillOptions(selected, allowCustom = false) {
   const owned = allSkills(state).map((x) => x.name).sort((a, b) => a.localeCompare(b));
   const ownedKeys = new Set(owned.map((x) => x.toLowerCase()));
   const learn = (kind) => skillCatalog.filter((x) => x.kind === kind && !x.custom && !ownedKeys.has(x.name.toLowerCase()));
@@ -838,7 +840,24 @@ function skillOptions(selected) {
   return `<option value="">Choose…</option>
     <optgroup label="Your Skills & Spells">${owned.map(ownedOption).join('')}</optgroup>
     <optgroup label="Learn a new Skill">${learn('skill').map((x) => option(x.name)).join('')}</optgroup>
-    <optgroup label="Learn a new Spell">${learn('spell').map((x) => option(x.name)).join('')}</optgroup>`;
+    <optgroup label="Learn a new Spell">${learn('spell').map((x) => option(x.name)).join('')}</optgroup>
+    ${allowCustom ? `<optgroup label="Not in the book"><option value="${CUSTOM_SKILL}" ${selected === CUSTOM_SKILL ? 'selected' : ''}>Custom Skill…</option></optgroup>` : ''}`;
+}
+
+// Name, Stat and description for a Skill that isn't in the book.
+function customSkillFields() {
+  return `<div class="adv-grid adv-skill-form">
+    <label class="field adv-wide">Custom Skill name<input data-skill-draft="customName" maxlength="60" value="${esc(skillUpDraft.customName)}" placeholder="e.g. Competitive Yo-Yo"></label>
+    <label class="field">Stat<select data-skill-draft="customStat">${['None', ...stats].map((k) => `<option value="${k}" ${k === skillUpDraft.customStat ? 'selected' : ''}>${k === 'None' ? 'None' : esc(statNames[k])}</option>`).join('')}</select></label>
+    <label class="field">Skill type<select data-skill-draft="customCheck">${CUSTOM_SKILL_CHECKS.map((c) => `<option ${c === skillUpDraft.customCheck ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+    <label class="field adv-wide">What it does <span class="optional">optional</span><textarea data-skill-draft="customDescription" maxlength="300" placeholder="As described by the potion or your GM">${esc(skillUpDraft.customDescription)}</textarea></label>
+  </div>
+  <p class="muted micro">For Skills the book doesn't list, like the random one an Earth hobby potion gives. It joins your Skills with the Stat you choose and appears on the sheet; log more Ranks later by picking it under Your Skills & Spells.</p>`;
+}
+
+// The Skill the draft logs: the selected one, or the custom name typed.
+function draftSkillName() {
+  return skillUpDraft.skill === CUSTOM_SKILL ? skillUpDraft.customName.trim() : skillUpDraft.skill;
 }
 
 function advancementStep() {
@@ -872,13 +891,14 @@ function advancementStep() {
       <div class="panel-head"><h2>Skill & Spell log</h2>${sourceRef('Rank limits p. 128')}</div>
       <p class="muted micro">Rank ${RANK_CAP} is the limit, or ${EXTENDED_RANK_CAP} where your Race or Class allows it; extra Ranks are wasted. Ranks above ${RANK_CAP} come online on Floor ${HIGH_RANK_FLOOR}. ${state.race || state.className ? `Entries before Floor ${esc(state.raceClassFloor)} happened before your Race/Class bonuses.` : ''}</p>
       <div class="adv-grid adv-skill-form">
-        <label class="field adv-wide">Skill or Spell<select data-skill-draft="skill">${skillOptions(skillUpDraft.skill)}</select></label>
+        <label class="field adv-wide">Skill or Spell<select data-skill-draft="skill">${skillOptions(skillUpDraft.skill, true)}</select></label>
         <label class="field">Ranks<input type="number" min="1" data-skill-draft="ranks" value="${esc(skillUpDraft.ranks)}"></label>
         <label class="field">Floor<input inputmode="numeric" maxlength="3" data-skill-draft="floor" value="${esc(skillUpDraft.floor)}" placeholder="${d.floor}"></label>
         <label class="field">How<select data-skill-draft="how">${SKILL_UP_METHODS.map((m) => `<option ${m === skillUpDraft.how ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
         <label class="field adv-wide">Note <span class="optional">optional</span><input data-skill-draft="note" maxlength="120" value="${esc(skillUpDraft.note)}"></label>
       </div>
-      <div class="action-right">${skillUpDraft.skill ? `<span class="muted micro">Limit for ${esc(skillUpDraft.skill)}: Rank ${rankLimit(state, skillUpDraft.skill)}</span>` : ''}
+      ${skillUpDraft.skill === CUSTOM_SKILL ? customSkillFields() : ''}
+      <div class="action-right">${draftSkillName() ? `<span class="muted micro">Limit for ${esc(draftSkillName())}: Rank ${rankLimit(state, draftSkillName())}</span>` : ''}
         <button type="button" class="primary" data-action="add-skill-up">Log skill-up</button></div>
       ${ups.length ? `<div class="table-wrap"><table class="adv-log"><thead><tr><th>Skill or Spell</th><th>Ranks</th><th>Floor</th><th>How</th><th>Note</th><th>Result</th><th></th></tr></thead><tbody>
         ${ups.map((entry, i) => {
@@ -1212,12 +1232,22 @@ main.addEventListener('click', async (event) => {
     return render();
   }
   if (action?.dataset.action === 'add-skill-up') {
-    if (!skillUpDraft.skill) return setNotice('Choose a Skill or Spell to log.');
-    const maxed = maxedSkill(skillUpDraft.skill);
-    if (maxed) return setNotice(`${skillUpDraft.skill} is already at its Rank ${maxed.limit} maximum.`);
+    const isCustom = skillUpDraft.skill === CUSTOM_SKILL;
+    const typed = draftSkillName();
+    if (!typed) return setNotice(isCustom ? 'Name the custom Skill.' : 'Choose a Skill or Spell to log.');
+    // A custom name the crawler or the book already has logs that Skill.
+    const existing = [...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)].find((x) => x.toLowerCase() === typed.toLowerCase());
+    const name = existing || typed;
+    const maxed = maxedSkill(name);
+    if (maxed) return setNotice(`${name} is already at its Rank ${maxed.limit} maximum.`);
     if (!(Number(skillUpDraft.ranks) >= 1)) return setNotice('Ranks gained must be 1 or more.');
-    state.skillUps = [...(state.skillUps || []), { ...skillUpDraft, floor: skillUpDraft.floor || state.floor }];
-    skillUpDraft = { ...skillUpDraft, skill: '', ranks: '1', note: '' };
+    const { customName, customStat, customCheck, customDescription, ...entry } = skillUpDraft;
+    state.skillUps = [...(state.skillUps || []), {
+      ...entry, skill: name, floor: skillUpDraft.floor || state.floor,
+      ...(isCustom && !existing ? { custom: { stat: customStat, check: customCheck, description: customDescription.trim() } } : {}),
+    }];
+    skillUpDraft = { ...skillUpDraft, skill: '', ranks: '1', note: '', customName: '', customStat: 'None', customCheck: 'Unopposed', customDescription: '' };
+    if (isCustom && existing) setNotice(`${name} is already a Skill, so the Ranks were logged to it.`);
     saveState();
     return render();
   }

@@ -570,14 +570,41 @@ export function rankLimit(state, name) {
   return allows ? EXTENDED_RANK_CAP : RANK_CAP;
 }
 
+// Skills not in the book (e.g. from an Earth hobby potion), defined by the
+// skill-up that first logged them: { name, stat, check, description } by lowercase
+// name. A name the book has is always the book's Skill.
+export const CUSTOM_SKILL_CHECKS = ['Opposed', 'Unopposed', 'Passive'];
+
+export function customSkills(state) {
+  const out = new Map();
+  (state.skillUps || []).forEach((entry) => {
+    const name = String(entry.skill || '').trim();
+    const key = name.toLowerCase();
+    if (!entry.custom || !name || catalogByKey.has(key) || out.has(key)) return;
+    out.set(key, {
+      name,
+      stat: stats.includes(entry.custom.stat) ? entry.custom.stat : 'None',
+      check: CUSTOM_SKILL_CHECKS.includes(entry.custom.check) ? entry.custom.check : '',
+      description: String(entry.custom.description || '').trim(),
+    });
+  });
+  return out;
+}
+
+function customSkill(def) {
+  return { name: def.name, label: def.name, stat: def.stat, check: def.check, rank: 0, sources: [], notes: def.description, custom: true };
+}
+
 function applySkillUps(state, skills, entries, capFor, report) {
+  const custom = customSkills(state);
   entries.forEach(({ entry, index }) => {
     const ranks = positiveInt(entry.ranks);
     if (!entry.skill || !ranks) return;
     const key = entry.skill.toLowerCase();
     if (!skills.has(key)) {
-      if (!catalogByKey.has(key)) return;
-      skills.set(key, catalogSkill(entry.skill, 0, ''));
+      if (custom.has(key)) skills.set(key, customSkill(custom.get(key)));
+      else if (catalogByKey.has(key)) skills.set(key, catalogSkill(entry.skill, 0, ''));
+      else return;
     }
     const skill = skills.get(key);
     const before = skill.rank;
@@ -853,9 +880,10 @@ export function advancementErrors(state) {
     if (!positiveInt(entry.floor)) out.push(`Level ${i + 2}: the floor must be a whole number of 1 or more.`);
   });
   const known = new Set(allSkills(state).map((x) => x.name.toLowerCase()));
+  const custom = customSkills(state);
   (state.skillUps || []).forEach((entry, i) => {
     const name = String(entry.skill || '').toLowerCase();
-    if (!name || !(known.has(name) || catalogByKey.has(name))) out.push(`Skill-up ${i + 1}: choose a Skill or Spell.`);
+    if (!name || !(known.has(name) || catalogByKey.has(name) || custom.has(name))) out.push(`Skill-up ${i + 1}: choose a Skill or Spell.`);
     if (!positiveInt(entry.ranks)) out.push(`Skill-up ${i + 1}: Ranks gained must be 1 or more.`);
     if (!positiveInt(entry.floor)) out.push(`Skill-up ${i + 1}: the floor must be a whole number of 1 or more.`);
   });
