@@ -3,6 +3,15 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.14',
+    date: '2026-11-22',
+    title: 'Readable attacks on the sheet',
+    items: [
+      'Attack names, Effects, Rank, Mod and Dice on the sheet print at the same size as your Stats; names and Effects wrap onto more lines instead of shrinking',
+      'When an attack’s text doesn’t fit, it ends with “… Page N”, the Reference page with its full details',
+    ],
+  },
+  {
     version: '0.13',
     date: '2026-11-20',
     title: 'Limited Races unlock from earlier skill-ups',

@@ -84,15 +84,19 @@ function upgradeNotes(skill) {
 
 function attackEffects(attack) {
   const parts = [...bookBasics(attack.skill || attack.name, attack), attack.effect];
-  if (attack.notes) parts.push(compact(attack.notes, 75));
+  if (attack.notes) parts.push(attack.notes);
   if (attack.favor) parts.push(`AI Favor ${attack.favor} (conditional)`);
-  return compact(parts.filter(Boolean).join('; '), 160);
+  return compact(parts.filter(Boolean).map((x) => asText(x).replace(/\.$/, '')).join('; '), 1000);
 }
 
 function gearText(item) {
   const qty = Number(item.qty) > 1 ? ` x${Number(item.qty)}` : '';
   return `${item.name}${qty}${item.notes ? ` - ${item.notes}` : ''}`;
 }
+
+// The Stats' size: an attack's Name and Effects wrap at it rather than
+// shrink; Rank, Mod and Dice use it when they fit.
+const ATTACK_TEXT_SIZE = 10;
 
 const SKILL_ROWS = 20;
 const SKILLS_PAGE_INDEX = 2;
@@ -183,14 +187,65 @@ function wrapText(font, size, text, width) {
   return lines;
 }
 
+// The lines of `text` at `size` that fit a text field's box, the way pdf-lib
+// lays out multiline fields. Text that doesn't fit ends "… Page N", the
+// Reference page where it's written in full.
+function fitLines(font, size, text, field, page) {
+  const widget = field.acroField.getWidgets()[0];
+  const rect = widget.getRectangle();
+  const inset = (widget.getBorderStyle()?.getWidth() ?? 0) + 1;
+  const width = rect.width - inset * 2 - 1; // a little slack so pdf-lib wraps where we do
+  const maxLines = Math.max(1, Math.floor((rect.height - inset * 2) / (font.heightAtSize(size) * 1.2)));
+  const value = drawable(font, asText(text).replace(/\s+/g, ' ').trim());
+  const lines = wrapText(font, size, value, width);
+  if (lines.length <= maxLines) return lines;
+  const suffix = page ? `… Page ${page}` : '…';
+  const words = value.split(' ');
+  for (let n = words.length - 1; n > 0; n--) {
+    const fit = wrapText(font, size, `${words.slice(0, n).join(' ').replace(/[;,:.]+$/, '')}${suffix}`, width);
+    if (fit.length <= maxLines) return fit;
+  }
+  return [suffix];
+}
+
+// The largest size up to `size` (down to 6) at which one line of `text`
+// fits a field's box.
+function singleLineSize(font, field, text, size) {
+  const widget = field.acroField.getWidgets()[0];
+  const width = widget.getRectangle().width - ((widget.getBorderStyle()?.getWidth() ?? 0) + 1) * 2 - 1;
+  const value = drawable(font, asText(text));
+  let fit = size;
+  while (fit > 6 && font.widthOfTextAtSize(value, fit) > width) fit -= 0.5;
+  return fit;
+}
+
+// A short value (Rank, Mod, Dice) at `size`, smaller only if it won't fit.
+function setShort(form, font, name, text, size) {
+  const field = safeField(form, name);
+  if (!field) return;
+  setField(form, name, text, { fontSize: singleLineSize(font, field, text, size) });
+}
+
+// A field at a readable `size`, wrapped, and cut short with "… Page N" when
+// it's too long.
+function setFitted(form, font, name, text, { size, page, multiline = false }) {
+  const field = safeField(form, name);
+  if (!field) return;
+  const lines = fitLines(font, size, text, field, page);
+  setField(form, name, lines.join('\n'), { fontSize: size, multiline: multiline || lines.length > 1 });
+}
+
 // Skills & Spells Reference: each Skill/Spell the crawler knows, with the
 // book's stat lines and every Upgrade (those reached at its Rank marked), in
-// two columns on as many pages as it takes.
-async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
+// two columns on as many pages as it takes. Laid out before the sheet is
+// filled so the sheet can point at a Skill's page (`pageOf`, 0-based within
+// the Reference); drawn last by addReferencePages.
+function layoutReference(fonts, state, skills, d) {
+  const pages = [];
+  const pageOf = new Map();
   const abilities = raceClassEntries(state).filter(([, entry]) => entry.benefits.length);
-  if (!skills.length && !abilities.length) return;
-  const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  if (!skills.length && !abilities.length) return { pages, pageOf };
+  const { regular, bold } = fonts;
   const [width, height] = [792, 612];
   const margin = 36;
   const gap = 24;
@@ -200,9 +255,10 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
   let column = 0;
   let y = 0;
   const newPage = () => {
-    page = pdfDoc.addPage([width, height]);
-    page.drawText(drawable(bold, `RACE, CLASS, SKILLS & SPELLS REFERENCE${state.name ? ` - ${state.name.toUpperCase()}` : ''}`), { x: margin, y: height - margin - 10, size: 12, font: bold });
-    page.drawText('Race and Class benefits in full, then each Skill and Spell\'s stat lines and Upgrades from the rulebook. Upgrades this crawler has reached are marked.', { x: margin, y: height - margin - 24, size: 7.5, font: regular });
+    page = [];
+    pages.push(page);
+    page.push({ text: drawable(bold, `RACE, CLASS, SKILLS & SPELLS REFERENCE${state.name ? ` - ${state.name.toUpperCase()}` : ''}`), x: margin, y: height - margin - 10, size: 12, font: bold });
+    page.push({ text: 'Race and Class benefits in full, then each Skill and Spell\'s stat lines and Upgrades from the rulebook. Upgrades this crawler has reached are marked.', x: margin, y: height - margin - 24, size: 7.5, font: regular });
     column = 0;
     y = top;
   };
@@ -224,7 +280,7 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
     const x = margin + column * (columnWidth + gap);
     for (const [font, size, line, indent] of lines) {
       y -= size + 2.5;
-      page.drawText(line, { x: x + indent, y, size, font });
+      page.push({ text: line, x: x + indent, y, size, font });
     }
     y -= 8;
   };
@@ -247,6 +303,15 @@ async function addReferencePages(pdfDoc, StandardFonts, state, skills, d) {
     }
     if (skill.source) rows.push([regular, 7, `From: ${skill.source}`, 0]);
     draw(rows);
+    if (!pageOf.has(skill.name.toLowerCase())) pageOf.set(skill.name.toLowerCase(), pages.length - 1);
+  }
+  return { pages, pageOf };
+}
+
+function addReferencePages(pdfDoc, reference) {
+  for (const ops of reference.pages) {
+    const page = pdfDoc.addPage([792, 612]);
+    for (const { text, ...options } of ops) page.drawText(text, options);
   }
 }
 
@@ -325,23 +390,6 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   clearField(form, 'Text Field 41');
   clearField(form, 'Text Field 42');
 
-  // Front-page attacks.
-  const attacks = attackRowsForSheet(state);
-  for (let row = 0; row < attackFields.length; row++) {
-    const names = attackFields[row];
-    const attack = attacks[row];
-    names.forEach((name) => clearField(form, name));
-    if (!attack) continue;
-    const hitMod = attack.stat && attack.stat !== 'None' ? d.modText[attack.stat].replace(/\+/g, '') : null;
-    const damageMod = attack.damageStat ? d.modText[attack.damageStat].replace(/\+/g, '') : null;
-    setField(form, names[0], attack.label || attack.name, { fontSize: 7 });
-    setField(form, names[1], attack.rank, { fontSize: 8 });
-    setField(form, names[2], hitMod || '', { fontSize: 8 });
-    setField(form, names[3], attack.dice || '', { fontSize: 8 });
-    setField(form, names[4], damageMod || '', { fontSize: 8 });
-    setField(form, names[5], attackEffects(attack), { fontSize: 6.5, multiline: true });
-  }
-
   // Page 2: Hotlist.
   const hot = hotlist(state);
   hot.forEach((text, index) => setField(form, `Text Field ${81 + index}`, text, { fontSize: 6.5, multiline: true }));
@@ -391,6 +439,33 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   const inventory = carried.filter((x) => x.location === 'inventory');
   fillInventoryRows(form, inventory.slice(0, INVENTORY_ROWS));
 
+  // Front-page attacks, at the Stats' size. Long text points at the
+  // Reference page, which comes after the sheet and any overflow pages.
+  const reference = layoutReference({ regular: font, bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold) }, state, skills, d);
+  const overflowCount = (rows, perPage) => Math.max(0, Math.ceil(rows.length / perPage) - 1);
+  const firstReferencePage = pdfDoc.getPageCount() + overflowCount(skills, SKILL_ROWS) + overflowCount(inventory, INVENTORY_ROWS) + 1;
+  const referencePage = (name) => {
+    const index = reference.pageOf.get(asText(name).toLowerCase());
+    return index === undefined ? null : firstReferencePage + index;
+  };
+  const attacks = attackRowsForSheet(state);
+  for (let row = 0; row < attackFields.length; row++) {
+    const names = attackFields[row];
+    const attack = attacks[row];
+    names.forEach((name) => clearField(form, name));
+    if (!attack) continue;
+    const hitMod = attack.stat && attack.stat !== 'None' ? d.modText[attack.stat].replace(/\+/g, '') : null;
+    const damageMod = attack.damageStat ? d.modText[attack.damageStat].replace(/\+/g, '') : null;
+    const page = referencePage(attack.skill || attack.name);
+    setFitted(form, font, names[0], attack.label || attack.name, { size: ATTACK_TEXT_SIZE, page });
+    setShort(form, font, names[1], attack.rank, ATTACK_TEXT_SIZE);
+    setShort(form, font, names[2], hitMod || '', ATTACK_TEXT_SIZE);
+    setShort(form, font, names[3], attack.dice || '', ATTACK_TEXT_SIZE);
+    setShort(form, font, names[4], damageMod || '', ATTACK_TEXT_SIZE);
+    setFitted(form, font, names[5], attackEffects(attack), { size: ATTACK_TEXT_SIZE, page, multiline: true });
+  }
+
+
   try {
     form.updateFieldAppearances(font);
   } catch (error) {
@@ -419,7 +494,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     pdfDoc.addPage(page);
   }
 
-  await addReferencePages(pdfDoc, StandardFonts, state, skills, d);
+  addReferencePages(pdfDoc, reference);
 
   // Keep the AcroForm editable; do not flatten.
   return pdfDoc.save({ useObjectStreams: false, updateFieldAppearances: false });

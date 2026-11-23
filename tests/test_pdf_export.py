@@ -254,6 +254,43 @@ class WeaponItemAttackTests(unittest.TestCase):
         self.assertEqual(rows, [("Club", "5", "1d6"), ("Big Club (Club)", "5", "1d6")])
 
 
+@unittest.skipIf(MiniRacer is None, "Install dev dependencies: python -m pip install -r requirements-dev.txt")
+class AttackTextSizeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.reader = export_pdf(
+            """(() => {
+              const s = initialState(); s.name = 'Tess'; s.kind = 'human';
+              s.backgrounds = backgrounds.human.map((st) => ({ option: 0, picks: st.options[0].skills.slice(0, 2).map((x) => x.name) }));
+              s.combatType = 'weapon'; s.combat = 'Bow';
+              s.stats = { Str: '6', Int: '5', Con: '4', Dex: '3', Cha: '2' };
+              const bow = normalizeGearItem({ ...newGearItem('weapon'), weaponSkill: 'Bow', location: 'hotlist:2',
+                name: 'The Extremely Long and Ostentatiously Named Hunting Bow of Grandpa Ernie the Third, Scourge of the Ninth Floor' });
+              s.gear = [bow];
+              return s;
+            })()"""
+        )
+        cls.fields = {name: field.get("/V") for name, field in (cls.reader.get_fields() or {}).items()}
+
+    def appearance_size(self, name: str) -> float:
+        widget = next(a.get_object() for a in self.reader.pages[0]["/Annots"] if a.get_object().get("/T") == name)
+        return float(re.search(r"/\S+ ([\d.]+) Tf", widget["/DA"]).group(1))
+
+    def test_name_and_effects_match_the_stats_size_and_wrap(self) -> None:
+        for name in ("Text Field 55", "Text Field 551", "Text Field 52", "Text Field 53", "Text Field 54", "Text Field 56", "Text Field 61", "Text Field 62"):
+            self.assertEqual(self.appearance_size(name), self.appearance_size("Text Field 21"), name)
+        self.assertEqual(self.fields["Text Field 55"], "Bow")
+        self.assertEqual(self.fields["Text Field 56"], "Range 100 ft; Piercing; Requires two hands and proper\nammunition")
+
+    def test_text_too_long_ends_with_its_reference_page(self) -> None:
+        name = self.fields["Text Field 61"]
+        lines = name.split("\n")
+        self.assertLessEqual(len(lines), 3)
+        page = int(re.search(r"… Page (\d+)$", name).group(1))
+        self.assertTrue(name.startswith("The Extremely Long"))
+        self.assertIn("Bow - Rank", self.reader.pages[page - 1].extract_text())
+
+
 # A 2 x 2 white JPEG.
 TINY_JPEG = ("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/"
               "wAALCAACAAIBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")
