@@ -15,6 +15,7 @@ import { downloadCharacterSheet } from './pdf.js';
 import {
   GEAR_SLOTS, ITEM_KINDS, ACCESSORY_TYPES, STAT_KEYS, CLOTHING_SLOTS, newGearItem, normalizeGearItem, gearItems, gearName,
   isEquipped, slotUsage, slotCount, bonusText, equipmentErrors, gearStatBonuses, SKILL_BONUS_TYPES,
+  CUSTOM_KINDS, quickGearItem, stripPlus, damageBonusProblem,
 } from './equipment.js';
 import {
   account, accountBar, accountView, profileView, refreshAccount, signOut, saveCharacter, openCharacter,
@@ -616,9 +617,10 @@ function attacksStep() {
         const checked = mandatory || selectedSet.has(attack.name);
         const rank = attack.rank;
         const hit = attack.stat === 'None' ? '—' : `${attack.stat} ${derived(state).modText[attack.stat] || '?'}`;
-        const dmg = attack.dice ? `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}` : 'no base damage';
+        const flat = attack.damageBonus ? ` ${attack.damageBonus > 0 ? '+' : '−'} ${Math.abs(attack.damageBonus)}` : '';
+        const dmg = attack.dice ? `${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''}${flat} ${attack.effect}` : 'no base damage';
         const where = attack.source === 'Gear' ? ` · ${attackLocation(attack.location)}${rank ? '' : ` · you don't know ${attack.skill} yet`}` : '';
-        return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${esc(where)}${mandatory ? ' · required' : ''}</small></span></label>`;
+        return `<label class="attack-select ${mandatory ? 'mandatory' : ''}"><input type="checkbox" data-attack-row="${esc(attack.name)}" ${checked ? 'checked' : ''} ${mandatory ? 'disabled' : ''}><span><strong>${esc(attack.label || attack.name)}</strong><small>Rank ${rank} · ${esc(hit)} to hit · ${esc(dmg)}${esc(where)}${mandatory ? ' · required' : ''}${(attack.damageNotes || []).map((x) => `<br>${esc(x)}`).join('')}</small></span></label>`;
       }).join('')}</div>
       ${shown > 5 ? `<div class="validation-box">${shown} attacks are ticked, but the sheet has five rows. Only the first five go on the sheet: ${esc(attackRowsForSheet(state).map((x) => x.label || x.name).join(', '))}.</div>` : ''}
       <div class="callout">The supplied sheet has five rows. If you have more than five attacks, choose which non-required ones are most useful to show here. Weapons you're holding or have in the Hotlist are ticked unless you untick them.</div>
@@ -946,29 +948,43 @@ function gearLocationOptions(item) {
 
 // Gear items open for editing (this page view only).
 const openGear = new Set();
+// Gear ids whose "Bonuses when equipped" panel was opened or closed by hand;
+// otherwise it's open when the item has a bonus.
+const gearBonusesOpen = new Map();
 // The quick-add bar: what's typed so far, kept when the type changes. Its
-// kind is an ITEM_KINDS kind or 'custom' (the full editor, for magic gear).
+// kind is an ITEM_KINDS kind, or 'custom' / 'custom-weapon' (the full editor,
+// for magic gear).
 const quickGear = { kind: 'item', location: 'inventory', name: '', qty: '1', spell: '', rank: '', weaponSkill: '' };
-const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom…']];
+// A gear bonus amount. Text, not type="number": a number field reports "+1"
+// as blank, so the bonus would silently not save. "+1" is stored as "1";
+// equipmentErrors() flags anything that isn't a whole number.
+const bonusInput = (bind, value, placeholder) => `<input maxlength="4" autocomplete="off" data-bind="${bind}" data-bonus data-rerender="true" value="${esc(value)}" placeholder="${placeholder}">`;
+const boundValue = (target) => (target.matches('[data-bonus]') ? stripPlus(target.value) : target.value);
+const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom item…'], ['custom-weapon', 'Custom weapon…']];
 
 function quickAddPanel() {
   const where = gearLocationOptions({ id: 'quick-add', location: quickGear.location });
   const spellItem = quickGear.kind === 'scroll' || quickGear.kind === 'spellbook';
+  const custom = quickGear.kind in CUSTOM_KINDS;
+  const weapon = quickGear.kind === 'weapon' || quickGear.kind === 'custom-weapon';
   const field = (label, html, cls = '') => `<label class="field ${cls}"><span class="field-label">${label}</span>${html}</label>`;
   const what = spellItem
     ? field('Spell', `<select name="spell" required><option value="">Choose a Spell</option>${spellNames.map((name) => `<option ${quickGear.spell === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>`, 'quick-name')
       + field('Rank', `<input name="rank" type="number" min="1" max="20" step="1" value="${esc(quickGear.rank)}" required>`, 'quick-qty')
-    : field(quickGear.kind === 'custom' ? 'Name <span class="optional">or name it in the editor</span>' : 'Name',
-      `<input name="name" maxlength="80" value="${esc(quickGear.name)}" placeholder="${{ potion: 'e.g. Healing Potion', custom: 'e.g. Enchanted Toe Ring', weapon: 'e.g. Enchanted Axe' }[quickGear.kind] || 'e.g. 50 feet of rope'}" ${quickGear.kind === 'custom' ? '' : 'required'}>`, 'quick-name')
-      + (quickGear.kind === 'weapon' ? field('Weapon Skill', `<select name="weaponSkill" required>${weaponSkillOptions(quickGear.weaponSkill)}</select>`) : '');
+    : field(custom ? 'Name <span class="optional">or name it in the editor</span>' : 'Name',
+      `<input name="name" maxlength="80" value="${esc(quickGear.name)}" placeholder="${{ potion: 'e.g. Healing Potion', custom: 'e.g. Enchanted Toe Ring', weapon: 'e.g. Enchanted Axe', 'custom-weapon': 'e.g. The Poky Little Dagger' }[quickGear.kind] || 'e.g. 50 feet of rope'}" ${custom ? '' : 'required'}>`, 'quick-name')
+      + (weapon ? field('Weapon Skill', `<select name="weaponSkill" required>${weaponSkillOptions(quickGear.weaponSkill)}</select>`) : '');
   return `<form class="quick-add" data-quick-gear autocomplete="off">
       ${field('Add', `<select name="kind" data-quick-kind>${QUICK_KINDS.map(([kind, label]) => `<option value="${kind}" ${quickGear.kind === kind ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
       ${what}
       ${field('Qty', `<input name="qty" type="number" min="1" step="1" value="${esc(quickGear.qty)}">`, 'quick-qty')}
       ${field('Where', `<select name="location">${where}</select>`)}
-      <button class="primary">${quickGear.kind === 'custom' ? 'Add and edit' : 'Add'}</button>
+      <button class="primary">${custom ? 'Add and edit' : 'Add'}</button>
     </form>
-    ${quickGear.kind === 'custom' ? '<p class="muted micro">Custom opens the full editor: description, and Stat, Skill and DR bonuses that apply while it’s equipped.</p>' : ''}`;
+    ${{
+      custom: '<p class="muted micro">Custom item opens the full editor: description, and Stat, Skill, DR and damage bonuses that apply while it’s equipped. It isn’t a weapon, so its damage bonuses add to all your attacks; for a magic weapon, use Custom weapon.</p>',
+      'custom-weapon': '<p class="muted micro">Custom weapon opens the full editor: description, and Stat, Skill, DR and damage bonuses. Its damage bonuses add to its own attacks only.</p>',
+    }[quickGear.kind] || ''}`;
 }
 
 // Keep what's typed in the quick-add bar.
@@ -1029,18 +1045,26 @@ function gearCard(item, i) {
       ${item.location === 'accessories' ? field('Accessory type', `<select data-bind="gear.${i}.accessoryType" data-rerender="true">${ACCESSORY_TYPES.map(([v, label]) => `<option value="${v}" ${item.accessoryType === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`) : ''}
     </div>
     ${field('Description <span class="optional">optional</span>', `<textarea data-bind="gear.${i}.description" maxlength="300" rows="2">${esc(item.description)}</textarea>`)}
-    <details class="gear-bonuses" ${bonus ? 'open' : ''}>
+    <details class="gear-bonuses" data-gear-bonuses="${id}" ${(gearBonusesOpen.get(item.id) ?? !!bonus) ? 'open' : ''}>
       <summary>Bonuses when equipped${bonus ? `: ${esc(bonus)}` : ''}</summary>
-      <div class="gear-stat-grid">${STAT_KEYS.map((key) => field(key, `<input type="number" step="1" data-bind="gear.${i}.bonuses.stats.${key}" data-rerender="true" value="${esc(stats[key] ?? '')}" placeholder="0">`)).join('')}
-        ${field('DR', `<input type="number" step="1" data-bind="gear.${i}.bonuses.dr" data-rerender="true" value="${esc(item.bonuses.dr)}" placeholder="0">`)}</div>
+      <div class="gear-stat-grid">${STAT_KEYS.map((key) => field(key, bonusInput(`gear.${i}.bonuses.stats.${key}`, stats[key] ?? '', '0'))).join('')}
+        ${field('DR', bonusInput(`gear.${i}.bonuses.dr`, item.bonuses.dr, '0'))}</div>
       ${item.bonuses.skills.map((x, j) => `<div class="gear-skill-row">
         ${field('Skill or Spell', `<input list="gear-skill-names" data-bind="gear.${i}.bonuses.skills.${j}.name" data-rerender="true" value="${esc(x.name)}" maxlength="60">`, 'gear-wide')}
         ${field('Bonus to', `<select data-bind="gear.${i}.bonuses.skills.${j}.type" data-rerender="true">${SKILL_BONUS_TYPES.map(([v, label]) => `<option value="${v}" ${x.type === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
-        ${field('Amount', `<input type="number" step="1" data-bind="gear.${i}.bonuses.skills.${j}.ranks" data-rerender="true" value="${esc(x.ranks)}" placeholder="+1">`)}
+        ${field('Amount', bonusInput(`gear.${i}.bonuses.skills.${j}.ranks`, x.ranks, '+1'))}
         <button type="button" class="secondary small" data-remove-gear-skill="${esc(item.id)}:${j}">Remove</button>
       </div>`).join('')}
       <button type="button" class="secondary small" data-add-gear-skill="${esc(item.id)}">+ Skill bonus</button>
       <p class="muted micro">Skill Ranks can't take a Skill past its Rank limit (15, or 20 if your Race or Class allows); extra Ranks do nothing. A bonus to checks isn't Ranks, so it always applies.</p>
+      ${item.bonuses.damage.map((x, j) => `<div class="gear-skill-row">
+        ${field('Damage', bonusInput(`gear.${i}.bonuses.damage.${j}.amount`, x.amount, '+1'))}
+        ${field('Only when <span class="optional">optional</span>', `<input data-bind="gear.${i}.bonuses.damage.${j}.condition" data-rerender="true" value="${esc(x.condition)}" maxlength="80" placeholder="e.g. hitting injured creatures">`, 'gear-wide')}
+        <button type="button" class="secondary small" data-remove-gear-damage="${esc(item.id)}:${j}">Remove</button>
+      </div>
+      ${{ missing: '<p class="error micro">Enter a Damage amount, e.g. 1. With no amount this bonus does nothing.</p>', amount: '<p class="error micro">The Damage amount must be a whole number, e.g. 1 or -1.</p>' }[damageBonusProblem(x)] || ''}`).join('')}
+      <button type="button" class="secondary small" data-add-gear-damage="${esc(item.id)}">+ Damage bonus</button>
+      <p class="muted micro">${item.kind === 'weapon' ? 'Adds to this weapon’s attacks.' : 'Adds to all your attacks while this item is equipped.'} With no condition it’s added to the Damage Mod; with one, it’s noted on the attack.</p>
     </details>
     ${item.kind === 'potion' ? '<p class="muted micro">Single use. In combat, no more than one potion every other round (Potion Sickness).</p>' : ''}
     ${item.kind === 'spellbook' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-read="${esc(item.id)}" ${item.spell && Number(item.rank) >= 1 ? '' : 'disabled'}>Read it</button><span class="muted micro">Grants the Spell at its Rank, then the book disappears.</span></div>` : ''}
@@ -1542,9 +1566,9 @@ function gearClick(event) {
     render();
     return true;
   }
-  const target = event.target.closest('[data-remove-gear], [data-gear-use], [data-gear-read], [data-add-gear-skill], [data-remove-gear-skill], [data-take-off], [data-remove-starting], [data-gear-qty], [data-gear-toggle]');
+  const target = event.target.closest('[data-remove-gear], [data-gear-use], [data-gear-read], [data-add-gear-skill], [data-remove-gear-skill], [data-add-gear-damage], [data-remove-gear-damage], [data-take-off], [data-remove-starting], [data-gear-qty], [data-gear-toggle]');
   if (!target) return false;
-  const { removeGear, gearUse, gearRead, addGearSkill, removeGearSkill, takeOff, removeStarting, gearQty, gearToggle } = target.dataset;
+  const { removeGear, gearUse, gearRead, addGearSkill, removeGearSkill, addGearDamage, removeGearDamage, takeOff, removeStarting, gearQty, gearToggle } = target.dataset;
   if (gearToggle) {
     if (openGear.has(gearToggle)) openGear.delete(gearToggle);
     else openGear.add(gearToggle);
@@ -1568,10 +1592,17 @@ function gearClick(event) {
   } else if (gearRead) {
     if (!readSpellbook(gearById(gearRead))) return true;
   } else if (addGearSkill) {
+    gearBonusesOpen.set(addGearSkill, true);
     gearById(addGearSkill).bonuses.skills.push({ name: '', ranks: '', type: 'rank' });
   } else if (removeGearSkill) {
     const [id, j] = removeGearSkill.split(':');
     gearById(id).bonuses.skills.splice(Number(j), 1);
+  } else if (addGearDamage) {
+    gearBonusesOpen.set(addGearDamage, true);
+    gearById(addGearDamage).bonuses.damage.push({ amount: '', condition: '' });
+  } else if (removeGearDamage) {
+    const [id, j] = removeGearDamage.split(':');
+    gearById(id).bonuses.damage.splice(Number(j), 1);
   } else if (takeOff) {
     // Starting clothing becomes an Inventory item so its slot is free.
     const item = normalizeGearItem({ ...newGearItem('item'), name: state.clothing[takeOff].trim(), description: 'Starting clothing' });
@@ -1615,7 +1646,10 @@ async function saveToAccount() {
   if (!verified()) return navigate('account');
   try {
     const saved = await saveCharacter(state);
-    setNotice(`Saved ${saved.name} to your account.`);
+    // Drafts save as they are, but say what's wrong with the gear.
+    const gearIssues = equipmentErrors(state);
+    if (gearIssues.length) setNotice(`Saved ${saved.name} to your account, but: ${gearIssues.join(' ')}`, 8000);
+    else setNotice(`Saved ${saved.name} to your account.`);
   } catch (error) {
     setNotice(error.message, 6000);
     if (error.status === 401 || error.status === 403) {
@@ -1769,24 +1803,17 @@ function quickSubmit(event) {
     setNotice(`${spend ? 'Spent' : 'Added'} ${amount} gold; ${state.gold} left.`);
   } else {
     readQuickGear(form);
-    const { kind, location } = quickGear;
-    const qty = Math.max(1, Math.trunc(Number(quickGear.qty) || 1));
-    const name = quickGear.name.trim();
-    const spellItem = kind === 'scroll' || kind === 'spellbook';
-    if (spellItem && !(quickGear.spell && Number(quickGear.rank) >= 1)) return setNotice('Choose the Spell and its Rank.'), true;
-    if (!spellItem && kind !== 'custom' && !name) return true;
-    if (kind === 'weapon' && !quickGear.weaponSkill) return setNotice('Choose the weapon Skill it attacks with.'), true;
-    const item = normalizeGearItem({
-      ...newGearItem(kind === 'custom' ? 'item' : kind), qty, location,
-      ...(spellItem ? { spell: quickGear.spell, rank: String(Math.trunc(Number(quickGear.rank))) } : { name }),
-      ...(kind === 'weapon' ? { weaponSkill: quickGear.weaponSkill } : {}),
-    });
+    const { kind } = quickGear;
+    const { item, error } = quickGearItem(quickGear);
+    if (!item) return error && setNotice(error), true;
+    const qty = item.qty;
     state.gear.push(item);
-    if (kind === 'custom') openGear.add(item.id);
+    if (kind in CUSTOM_KINDS) openGear.add(item.id);
     Object.assign(quickGear, { name: '', qty: '1', spell: '', rank: '' });
     const ready = item.location === 'holding' || item.location.startsWith('hotlist:');
-    const after = { custom: ' Fill in its details below.', weapon: ready ? ' It’s in your Attacks.' : ' It’s listed in your Attacks; tick it there to put it on the sheet, or move it to Holding or the Hotlist.' }[kind] || '';
-    setNotice(`Added ${qty > 1 ? `${qty} × ` : ''}${gearName(item) || 'a custom item'}.${after}`, after ? 5000 : undefined);
+    const inAttacks = ready ? ' It’s in your Attacks.' : ' It’s listed in your Attacks; tick it there to put it on the sheet, or move it to Holding or the Hotlist.';
+    const after = { custom: ' Fill in its details below.', 'custom-weapon': `${inAttacks} Fill in its details below.`, weapon: inAttacks }[kind] || '';
+    setNotice(`Added ${qty > 1 ? `${qty} × ` : ''}${gearName(item) || `a custom ${item.kind === 'weapon' ? 'weapon' : 'item'}`}.${after}`, after ? 5000 : undefined);
   }
   saveState();
   render();
@@ -1852,7 +1879,7 @@ main.addEventListener('change', (event) => {
 
   const target = event.target;
   if (target.matches('[data-bind]')) {
-    const value = target.type === 'checkbox' ? target.checked : target.value;
+    const value = target.type === 'checkbox' ? target.checked : boundValue(target);
     const hotlistKeys = new Set(['healSlot', 'spellSlot', 'potionsSlot', 'weaponLocation']);
     if (hotlistKeys.has(target.dataset.bind)) {
       const key = target.dataset.bind === 'healSlot'
@@ -1943,7 +1970,7 @@ main.addEventListener('input', (event) => {
   if (quick) return readQuickGear(quick);
   const target = event.target;
   if (target.matches('[data-bind]') && target.type !== 'checkbox' && target.tagName !== 'SELECT') {
-    setPath(target.dataset.bind, target.value);
+    setPath(target.dataset.bind, boundValue(target));
     renderNav(); renderSummary();
     return;
   }
@@ -1975,6 +2002,11 @@ function clearHotlistDragStyles() {
 
 // <details> toggle doesn't bubble, so listen while capturing.
 main.addEventListener('toggle', (event) => {
+  const gearId = event.target.dataset?.gearBonuses;
+  if (gearId) {
+    gearBonusesOpen.set(gearId, event.target.open);
+    return;
+  }
   const key = event.target.dataset?.rcBenefits;
   if (!key) return;
   const had = rcOpen.benefits.has(key);

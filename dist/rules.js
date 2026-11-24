@@ -3,6 +3,7 @@ import { races, classes, skillCatalog } from './races-classes.js';
 import { buildEntry, buildErrors, normalizeBuild, MAX_RANK } from './builds.js';
 import {
   gearItems, gearName, gearStatBonuses, gearSkillBonuses, gearDr, equipmentErrors, normalizeGearItem, bonusText,
+  equippedGear, damageBonuses, damageBonusText,
 } from './equipment.js';
 
 // Source-bound rules for the first-draft builder.
@@ -374,9 +375,36 @@ export function allAttacks(state) {
         rank: skill?.rank || 0,
         source: 'Gear',
         location: item.location,
+        item,
       };
     });
-  return [...skills, ...items];
+  // Damage bonuses: a weapon's own, plus every other equipped item's.
+  const worn = equippedGear(state).filter((item) => item.kind !== 'weapon')
+    .flatMap((item) => damageBonuses(item).map((x) => ({ ...x, from: gearName(item) })));
+  return [...skills, ...items].map(({ item, ...attack }) => {
+    const bonuses = [...(item ? damageBonuses(item) : []), ...worn];
+    if (!bonuses.length) return attack;
+    const conditional = bonuses.filter((x) => x.condition)
+      .map((x) => `${damageBonusText(x)}${x.from ? ` from ${x.from}` : ''}`);
+    return {
+      ...attack,
+      damageBonus: bonuses.filter((x) => !x.condition).reduce((sum, x) => sum + x.amount, 0),
+      damageNotes: conditional,
+      notes: [attack.notes, ...conditional].filter(Boolean).map((x) => x.replace(/\.$/, '')).join('. '),
+    };
+  });
+}
+
+// The Damage Mod an attack adds: its damage Stat's modifier plus flat
+// damage bonuses from gear ("+1/+2" when the Stat changes with day/night).
+export function damageModText(attack, d) {
+  const base = attack.damageStat ? d.modText[attack.damageStat] || '' : '';
+  if (!attack.damageBonus) return base;
+  const add = (text) => {
+    const n = (Number(text) || 0) + attack.damageBonus;
+    return n > 0 ? `+${n}` : n ? String(n) : '';
+  };
+  return base.includes('/') ? base.split('/').map(add).join('/') : add(base);
 }
 
 // Weapons held or in the Hotlist are ready to swing, so they're on the sheet

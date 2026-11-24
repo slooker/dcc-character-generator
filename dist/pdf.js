@@ -1,6 +1,6 @@
 import {
   stats, allSkills, attackRowsForSheet, derived, carriedItems, hotlist,
-  unenhancedStats, enhancedStats, findRace, findClass, errors, validPortrait,
+  unenhancedStats, enhancedStats, findRace, findClass, errors, validPortrait, damageModText,
 } from './rules.js';
 import { skillText } from './skill-text.js';
 
@@ -227,12 +227,13 @@ function setShort(form, font, name, text, size) {
 }
 
 // A field at a readable `size`, wrapped, and cut short with "… Page N" when
-// it's too long.
+// it's too long. The field does its own wrapping: with hard line breaks, a
+// viewer or printer that wraps a little narrower adds a line.
 function setFitted(form, font, name, text, { size, page, multiline = false }) {
   const field = safeField(form, name);
   if (!field) return;
   const lines = fitLines(font, size, text, field, page);
-  setField(form, name, lines.join('\n'), { fontSize: size, multiline: multiline || lines.length > 1 });
+  setField(form, name, lines.join(' '), { fontSize: size, multiline: multiline || lines.length > 1 });
 }
 
 // Skills & Spells Reference: each Skill/Spell the crawler knows, with the
@@ -455,7 +456,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
     names.forEach((name) => clearField(form, name));
     if (!attack) continue;
     const hitMod = attack.stat && attack.stat !== 'None' ? d.modText[attack.stat].replace(/\+/g, '') : null;
-    const damageMod = attack.damageStat ? d.modText[attack.damageStat].replace(/\+/g, '') : null;
+    const damageMod = damageModText(attack, d).replace(/\+/g, '');
     const page = referencePage(attack.skill || attack.name);
     setFitted(form, font, names[0], attack.label || attack.name, { size: ATTACK_TEXT_SIZE, page });
     setShort(form, font, names[1], attack.rank, ATTACK_TEXT_SIZE);

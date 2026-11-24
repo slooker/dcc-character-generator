@@ -14,6 +14,8 @@
 // A weapon names the weapon Skill it attacks with (its Rank and dice).
 // A Skill bonus is either Ranks (capped by the Skill's Rank limit, like any
 // other Ranks) or a bonus to that Skill's checks (not Ranks, so not capped).
+// A damage bonus, optionally only "when" something is true, applies to a
+// weapon's own attacks, or to every attack while another item is equipped.
 // This module only reads `state`; rules.js applies the bonuses.
 
 export const STAT_KEYS = ['Str', 'Int', 'Con', 'Dex', 'Cha'];
@@ -64,7 +66,7 @@ export function newGearItem(kind = 'item') {
     spell: '',
     rank: '',
     weaponSkill: '',
-    bonuses: { stats: {}, skills: [], dr: '' },
+    bonuses: { stats: {}, skills: [], dr: '', damage: [] },
   };
 }
 
@@ -80,6 +82,9 @@ export function normalizeGearItem(raw) {
       ? bonuses.skills.map((x) => ({ name: String(x?.name || ''), ranks: x?.ranks ?? '', type: x?.type === 'check' ? 'check' : 'rank' }))
       : [],
     dr: bonuses.dr ?? '',
+    damage: Array.isArray(bonuses.damage)
+      ? bonuses.damage.map((x) => ({ amount: x?.amount ?? '', condition: String(x?.condition || '') }))
+      : [],
   };
   return item;
 }
@@ -113,6 +118,58 @@ export function skillBonuses(item) {
     .filter((x) => x.name && x.ranks);
 }
 
+// [{ amount, condition }]; condition is '' for a bonus that always applies.
+export function damageBonuses(item) {
+  return (item.bonuses?.damage || [])
+    .map((x) => ({ amount: int(x.amount) || 0, condition: String(x.condition || '').trim() }))
+    .filter((x) => x.amount);
+}
+
+// What's wrong with a typed damage bonus: 'amount' (not a whole number),
+// 'missing' (a condition but no amount; the amount's placeholder looks like a
+// value, so a blank one is easy to miss) or ''.
+export function damageBonusProblem(x) {
+  const amount = String(x.amount ?? '').trim();
+  if (amount && int(amount) === null) return 'amount';
+  return String(x.condition || '').trim() && !int(amount) ? 'missing' : '';
+}
+
+export function damageBonusText(x) {
+  return `${x.amount > 0 ? '+' : ''}${x.amount} damage${x.condition ? ` (${x.condition})` : ''}`;
+}
+
+// "+3" -> "3" for a typed bonus amount; anything else is left (trimmed) for
+// equipmentErrors() to check.
+export function stripPlus(value) {
+  return String(value ?? '').trim().replace(/^\+(?=\d+$)/, '');
+}
+
+// The gear Add bar's custom kinds open the full editor; each makes an
+// ordinary item of the ITEM_KINDS kind it maps to.
+export const CUSTOM_KINDS = { custom: 'item', 'custom-weapon': 'weapon' };
+
+// The new item for the gear Add bar's { kind, location, name, qty, spell, rank,
+// weaponSkill }: { item } or { error } ('' when there's simply nothing to add).
+export function quickGearItem(quick) {
+  const kind = quick.kind;
+  const spellItem = kind === 'scroll' || kind === 'spellbook';
+  const custom = kind in CUSTOM_KINDS;
+  const weapon = kind === 'weapon' || kind === 'custom-weapon';
+  const name = String(quick.name || '').trim();
+  if (spellItem && !(quick.spell && Number(quick.rank) >= 1)) return { error: 'Choose the Spell and its Rank.' };
+  if (!spellItem && !custom && !name) return { error: '' };
+  if (weapon && !quick.weaponSkill) return { error: 'Choose the weapon Skill it attacks with.' };
+  return {
+    item: normalizeGearItem({
+      ...newGearItem(CUSTOM_KINDS[kind] || kind),
+      qty: Math.max(1, Math.trunc(Number(quick.qty) || 1)),
+      location: quick.location,
+      ...(spellItem ? { spell: quick.spell, rank: String(Math.trunc(Number(quick.rank))) } : { name }),
+      ...(weapon ? { weaponSkill: quick.weaponSkill } : {}),
+    }),
+  };
+}
+
 export function drBonus(item) {
   return int(item.bonuses?.dr) || 0;
 }
@@ -140,6 +197,7 @@ export function bonusText(item) {
   skillBonuses(item).forEach((x) => parts.push(`${x.ranks > 0 ? '+' : ''}${x.ranks} ${x.name}${x.type === 'check' ? ' checks' : ''}`));
   const dr = drBonus(item);
   if (dr) parts.push(`DR ${dr > 0 ? '+' : ''}${dr}`);
+  damageBonuses(item).forEach((x) => parts.push(damageBonusText(x)));
   return parts.join(', ');
 }
 
@@ -216,6 +274,11 @@ export function equipmentErrors(state) {
     if (STAT_KEYS.some((key) => stats[key] !== '' && stats[key] != null && int(stats[key]) === null)) out.push(`Stat bonuses on “${name}” must be whole numbers.`);
     if ((item.bonuses?.skills || []).some((x) => String(x.name || '').trim() && int(x.ranks) === null)) out.push(`Skill bonuses on “${name}” need a whole number of Ranks.`);
     if (item.bonuses?.dr !== '' && item.bonuses?.dr != null && int(item.bonuses.dr) === null) out.push(`The DR bonus on “${name}” must be a whole number.`);
+    (item.bonuses?.damage || []).forEach((x) => {
+      const problem = damageBonusProblem(x);
+      if (problem === 'amount') out.push(`Damage bonuses on “${name}” need a whole-number amount.`);
+      else if (problem === 'missing') out.push(`The damage bonus on “${name}” (${String(x.condition).trim()}) has no amount. Enter one, e.g. 1.`);
+    });
   });
   for (const [key, label] of [['gold', 'Gold'], ['miscJunk', 'Misc. Junk']]) {
     const value = state[key];

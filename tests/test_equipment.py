@@ -133,7 +133,7 @@ class EquipmentRulesTests(unittest.TestCase):
 
     def test_saved_drafts_without_gear_still_load(self) -> None:
         state = self.val("normalizeState({ name: 'Old', gear: [{ name: 'Lamp' }] })")
-        self.assertEqual(state["gear"][0]["bonuses"], {"stats": {}, "skills": [], "dr": ""})
+        self.assertEqual(state["gear"][0]["bonuses"], {"stats": {}, "skills": [], "dr": "", "damage": []})
         self.assertEqual(state["gear"][0]["location"], "inventory")
         self.assertEqual(self.val("normalizeState({ name: 'Older' }).gear"), [])
 
@@ -161,6 +161,76 @@ class EquipmentRulesTests(unittest.TestCase):
         self.assertEqual(self.val("attackRowsForSheet(w).map((x) => x.label)"), ["Club", "Bat (Club)", "Spare Bow (Bow)"])
         # Saved crawlers without attackOff load with it empty.
         self.assertEqual(self.val("normalizeState({ name: 'Old' }).attackOff"), [])
+
+    def test_damage_bonuses_flat_and_conditional(self) -> None:
+        # A weapon's bonuses apply to its own attack; other equipped items' to every attack.
+        state = """crawler({ gear: [
+          gear('weapon', { name: 'Mercy Stick', weaponSkill: 'Club', location: 'holding',
+            bonuses: { damage: [{ amount: '1', condition: 'hitting injured creatures' }, { amount: '2', condition: '' }] } }),
+          gear('item', { name: 'Spiked Gloves', location: 'gloves', bonuses: { damage: [{ amount: '1' }] } }),
+          gear('item', { name: 'Stowed Ring', location: 'inventory', bonuses: { damage: [{ amount: '5' }] } })] })"""
+        rows = {x[0]: x[1:] for x in self.val(f"allAttacks({state}).map((x) => [x.label, x.damageBonus || 0, x.damageNotes || [], damageModText(x, derived({state}))])")}
+        self.assertEqual(rows["Club"], [1, [], "+4"])  # Str 6 mod +3, gloves +1
+        self.assertEqual(rows["Mercy Stick (Club)"], [3, ["+1 damage (hitting injured creatures)"], "+6"])
+        self.assertIn("+1 damage (hitting injured creatures)", self.val(f"carriedItems({state}).find((x) => x.name === 'Mercy Stick').bonus"))
+        self.assertIn("Damage bonuses on “Stick” need a whole-number amount.",
+                      self.errors("gear('weapon', { name: 'Stick', weaponSkill: 'Club', bonuses: { damage: [{ amount: 'lots', condition: 'always' }] } })"))
+        # Bonus fields are text, so "+1" is what's stored; it counts as 1.
+        plus = "crawler({ gear: [gear('weapon', { name: 'Poky', weaponSkill: 'Dagger', location: 'holding', bonuses: { stats: { Str: '+2' }, dr: '+1', skills: [{ name: 'Dagger', ranks: '+1', type: 'check' }], damage: [{ amount: '+1', condition: '' }] } })] })"
+        self.assertEqual(self.val(f"equipmentErrors({plus})"), [])
+        self.assertEqual(self.val(f"allAttacks({plus}).find((x) => x.label === 'Poky (Dagger)').damageBonus"), 1)
+        self.assertEqual(self.val(f"[enhancedStats({plus}).Str, gearDr({plus})]"), [8, 1])
+        problems = "[{ amount: '', condition: 'x' }, { amount: '0', condition: 'x' }, { amount: 'lots', condition: '' }, { amount: '1', condition: 'x' }, { amount: '', condition: '' }]"
+        self.assertEqual(self.val(f"{problems}.map(damageBonusProblem)"), ["missing", "missing", "amount", "", ""])
+        # Typed "+N" is stored as "N"; anything else is left for the whole-number check.
+        self.assertEqual(self.val("['+1', ' +12 ', '1', '-2', '+', '+x', '++1', ''].map(stripPlus)"), ["1", "12", "1", "-2", "+", "+x", "++1", ""])
+        # A condition with a blank (or 0) amount does nothing, so it's flagged; an empty row isn't.
+        for amount in ("", " ", "0"):
+            self.assertEqual(self.errors(f"gear('weapon', {{ name: 'Poky', weaponSkill: 'Dagger', bonuses: {{ damage: [{{ amount: '{amount}', condition: 'hitting injured creatures' }}] }} }})"),
+                             ["The damage bonus on “Poky” (hitting injured creatures) has no amount. Enter one, e.g. 1."])
+        self.assertEqual(self.errors("gear('weapon', { name: 'Poky', weaponSkill: 'Dagger', bonuses: { damage: [{ amount: '', condition: ' ' }] } })"), [])
+        # Saved items from before damage bonuses load with none.
+        self.assertEqual(self.val("normalizeGearItem({ name: 'Old', bonuses: { stats: {} } }).bonuses.damage"), [])
+
+    def quick(self, **fields) -> dict:
+        quick = {"kind": "item", "location": "inventory", "name": "", "qty": "1", "spell": "", "rank": "", "weaponSkill": "", **fields}
+        return self.val(f"quickGearItem({json.dumps(quick)})")
+
+    def test_quick_add_custom_weapon_is_a_weapon(self) -> None:
+        item = self.quick(kind="custom-weapon", name=" The Poky Little Dagger ", weaponSkill="Dagger", location="holding")["item"]
+        self.assertEqual([item["kind"], item["name"], item["weaponSkill"], item["location"], item["qty"]],
+                         ["weapon", "The Poky Little Dagger", "Dagger", "holding", 1])
+        # Like Custom item, the name can wait for the editor; the weapon Skill can't.
+        self.assertEqual(self.quick(kind="custom-weapon", weaponSkill="Dagger")["item"]["kind"], "weapon")
+        self.assertEqual(self.quick(kind="custom-weapon", name="Dagger"), {"error": "Choose the weapon Skill it attacks with."})
+
+    def test_quick_add_custom_item_and_plain_kinds(self) -> None:
+        custom = self.quick(kind="custom", weaponSkill="Dagger")["item"]
+        self.assertEqual([custom["kind"], custom["name"], custom["weaponSkill"]], ["item", "", ""])
+        weapon = self.quick(kind="weapon", name="Axe", weaponSkill="Axe", qty="2.7")["item"]
+        self.assertEqual([weapon["kind"], weapon["weaponSkill"], weapon["qty"]], ["weapon", "Axe", 2])
+        self.assertEqual(self.quick(kind="weapon", name="Axe"), {"error": "Choose the weapon Skill it attacks with."})
+        self.assertEqual(self.quick(kind="potion", name="  "), {"error": ""})  # nothing to add
+        scroll = self.quick(kind="scroll", spell="Magic Missile", rank="3.9", name="ignored")["item"]
+        self.assertEqual([scroll["kind"], scroll["spell"], scroll["rank"], scroll["name"]], ["scroll", "Magic Missile", "3", ""])
+        self.assertEqual(self.quick(kind="spellbook", spell="Magic Missile"), {"error": "Choose the Spell and its Rank."})
+
+    def test_custom_weapon_damage_bonus_is_its_own(self) -> None:
+        # The bug report: a Custom weapon dagger's +1 vs injured goes on the dagger only.
+        dagger = """Object.assign(quickGearItem({ kind: 'custom-weapon', name: 'The Poky Little Dagger', weaponSkill: 'Dagger', location: 'holding', qty: '1' }).item,
+          { bonuses: { stats: {}, skills: [], dr: '', damage: [{ amount: '1', condition: 'hitting injured creatures' }] } })"""
+        rows = {x[0]: x[1] for x in self.val(f"allAttacks(crawler({{ gear: [{dagger}] }})).map((x) => [x.label, x.damageNotes || []])")}
+        self.assertEqual(rows["The Poky Little Dagger (Dagger)"], ["+1 damage (hitting injured creatures)"])
+        self.assertEqual([notes for label, notes in rows.items() if label != "The Poky Little Dagger (Dagger)"], [[]] * (len(rows) - 1))
+        # The same item made with Custom item boosts every attack instead.
+        ring = dagger.replace("'custom-weapon'", "'custom'")
+        notes = self.val(f"allAttacks(crawler({{ gear: [{ring}] }})).map((x) => x.damageNotes || [])")
+        self.assertTrue(notes and all(x == ["+1 damage (hitting injured creatures) from The Poky Little Dagger"] for x in notes), notes)
+
+    def test_attack_effects_have_no_hard_line_breaks(self) -> None:
+        # Viewers and printers re-wrap the field; a hard break there would add a line.
+        js = PDF_CRAWLER.replace("COUNT", "0").replace("s.gear = [", "s.gear = [ normalizeGearItem({ ...newGearItem('weapon'), name: 'Poky', weaponSkill: 'Dagger', location: 'holding', bonuses: { damage: [{ amount: '1', condition: 'hitting injured creature' }] } }),")
+        self.assertEqual(export_fields(js)["Text Field 62"], "Range 5 ft; Piercing; +1 damage (hitting injured creature); AI Favor 1 (conditional)")
 
     def test_weapons_need_a_weapon_skill(self) -> None:
         self.assertIn("Choose the weapon Skill “Stick” attacks with.", self.errors("gear('weapon', { name: 'Stick' })"))

@@ -276,16 +276,23 @@ class AttackTextSizeTests(unittest.TestCase):
         widget = next(a.get_object() for a in self.reader.pages[0]["/Annots"] if a.get_object().get("/T") == name)
         return float(re.search(r"/\S+ ([\d.]+) Tf", widget["/DA"]).group(1))
 
+    def appearance_lines(self, name: str) -> list:
+        """The lines a field's appearance draws (pdf-lib writes one hex Tj per line)."""
+        widget = next(a.get_object() for a in self.reader.pages[0]["/Annots"] if a.get_object().get("/T") == name)
+        stream = widget["/AP"]["/N"].get_object().get_data().decode("latin-1")
+        return [bytes.fromhex(x).decode("latin-1") for x in re.findall(r"<([0-9A-Fa-f]*)> Tj", stream)]
+
     def test_name_and_effects_match_the_stats_size_and_wrap(self) -> None:
         for name in ("Text Field 55", "Text Field 551", "Text Field 52", "Text Field 53", "Text Field 54", "Text Field 56", "Text Field 61", "Text Field 62"):
             self.assertEqual(self.appearance_size(name), self.appearance_size("Text Field 21"), name)
         self.assertEqual(self.fields["Text Field 55"], "Bow")
-        self.assertEqual(self.fields["Text Field 56"], "Range 100 ft; Piercing; Requires two hands and proper\nammunition")
+        # The value has no hard line breaks (viewers and printers re-wrap it); the field wraps it.
+        self.assertEqual(self.fields["Text Field 56"], "Range 100 ft; Piercing; Requires two hands and proper ammunition")
+        self.assertEqual(self.appearance_lines("Text Field 56"), ["Range 100 ft; Piercing; Requires two hands and proper", "ammunition"])
 
     def test_text_too_long_ends_with_its_reference_page(self) -> None:
         name = self.fields["Text Field 61"]
-        lines = name.split("\n")
-        self.assertLessEqual(len(lines), 3)
+        self.assertLessEqual(len(self.appearance_lines("Text Field 61")), 3)
         page = int(re.search(r"… Page (\d+)$", name).group(1))
         self.assertTrue(name.startswith("The Extremely Long"))
         self.assertIn("Bow - Rank", self.reader.pages[page - 1].extract_text())

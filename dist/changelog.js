@@ -3,6 +3,21 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.16',
+    date: '2026-11-24',
+    title: 'Damage bonuses on items',
+    items: [
+      'Items can give damage bonuses, with an optional condition, e.g. +1 damage (hitting injured creatures)',
+      'A weapon’s damage bonus applies to its own attacks; any other item’s applies to all your attacks while it’s equipped',
+      'Bonuses with no condition are added to the attack’s Damage Mod on the sheet; conditional ones are listed in the attack’s Effects, e.g. “+1 damage (hitting injured creatures)”',
+      'New “Custom weapon…” in the gear Add menu: pick its weapon Skill, then fill in its bonuses in the full editor (“Custom…” is now “Custom item…”)',
+      'The Bonuses panel on an item stays open when you add a Skill or damage bonus row',
+      'A damage bonus with a condition but no amount is flagged on its row, on the Equipment step and when you save',
+      'An attack’s Name and Effects on the sheet wrap in the field instead of at fixed line breaks, so printing doesn’t push them to an extra line',
+      'Item bonus amounts accept a leading + (+1 is saved as 1); before, typing +1 left the bonus blank and nothing saved',
+    ],
+  },
+  {
     version: '0.15',
     date: '2026-11-23',
     title: 'Custom Skills',

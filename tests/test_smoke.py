@@ -241,9 +241,22 @@ class ProjectStructureTests(unittest.TestCase):
         # Equipment: quick add, gold add/spend, quantity steppers, Use on potions and scrolls.
         for marker in ("data-quick-gear", "data-quick-gold", "data-gear-qty=", "data-gear-toggle=", "function quickSubmit(event)"):
             self.assertIn(marker, app)
-        # One "Add" type dropdown; Custom… opens the full editor.
-        self.assertIn("const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom…']];", app)
-        self.assertIn("if (kind === 'custom') openGear.add(item.id);", app)
+        # One "Add" type dropdown; Custom item… and Custom weapon… open the full editor.
+        self.assertIn("const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom item…'], ['custom-weapon', 'Custom weapon…']];", app)
+        self.assertIn("const { item, error } = quickGearItem(quickGear);", app)
+        self.assertIn("if (kind in CUSTOM_KINDS) openGear.add(item.id);", app)
+        # Gear bonus amounts are text fields: a type="number" field reports "+1" as blank, so it wouldn't save.
+        self.assertNotRegex(app, r'type="number"[^>]*data-bind="gear\.\$\{i\}\.bonuses')
+        self.assertEqual(app.count("bonusInput(`gear.${i}.bonuses."), 4)
+        self.assertEqual(app.count("boundValue(target)"), 2)  # the change and input handlers
+        # A damage bonus with a condition but no amount is flagged on its row and when saving.
+        self.assertIn("[damageBonusProblem(x)] || ''", app)
+        self.assertIn("if (gearIssues.length) setNotice(`Saved ${saved.name} to your account, but: ${gearIssues.join(' ')}`, 8000);", app)
+        # Adding a Skill or damage bonus row keeps the Bonuses panel open; it remembers being toggled.
+        self.assertIn("data-gear-bonuses=\"${id}\" ${(gearBonusesOpen.get(item.id) ?? !!bonus) ? 'open' : ''}", app)
+        self.assertIn("gearBonusesOpen.set(addGearSkill, true);", app)
+        self.assertIn("gearBonusesOpen.set(addGearDamage, true);", app)
+        self.assertIn("gearBonusesOpen.set(gearId, event.target.open);", app)
         self.assertNotIn("data-add-gear=", app)
         self.assertIn("item.kind === 'potion' || item.kind === 'scroll' ? `<button type=\"button\" class=\"secondary small\" data-gear-use=", app)
         # Portraits over the upload limit are refused before they're read.
