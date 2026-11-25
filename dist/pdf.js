@@ -3,6 +3,7 @@ import {
   unenhancedStats, enhancedStats, findRace, findClass, errors, validPortrait, damageModText,
 } from './rules.js';
 import { skillText } from './skill-text.js';
+import { partyNotes, externalBuffLines } from './party.js';
 
 const attackFields = [
   ['Text Field 55', 'Text Field 551', 'Text Field 52', 'Text Field 53', 'Text Field 54', 'Text Field 56'],
@@ -375,7 +376,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 27', d.move, { fontSize: 9 });
   setField(form, 'Text Field 28', d.step, { fontSize: 9 });
   // Damage Resistance: Armor + Buffs = DR Total. Race/Class DR is listed per source.
-  // Armor: DR from equipped gear; Buffs: Race/Class DR.
+  // Armor: DR from equipped gear; Buffs: Race/Class and Party buff DR.
   if (d.dr.armor) setField(form, 'Text Field 29', d.dr.armor, { fontSize: 9 });
   else clearField(form, 'Text Field 29');
   setField(form, 'Text Field 30', d.dr.parts.map((x) => `+${x.value} (${x.from})`).join(' '), { fontSize: 8 });
@@ -387,9 +388,12 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   setField(form, 'Text Field 37', d.manaText ?? d.currentMana, { fontSize: 9 });
   setField(form, 'Text Field 38', d.manaText ?? d.maxMana, { fontSize: 9 });
   clearField(form, 'Text Field 39');
-  clearField(form, 'Text Field 40');
-  clearField(form, 'Text Field 41');
-  clearField(form, 'Text Field 42');
+  // External Buffs (Max 3): active Party buffs, one per row.
+  const external = externalBuffLines(state);
+  ['Text Field 40', 'Text Field 41', 'Text Field 42'].forEach((name, i) => {
+    if (external[i]) setField(form, name, compact(external[i], 60), { fontSize: external[i].length > 45 ? 6.5 : 8 });
+    else clearField(form, name);
+  });
 
   // Page 2: Hotlist.
   const hot = hotlist(state);
@@ -425,6 +429,7 @@ export async function buildCharacterPdf(state, PDFLibNamespace, templateBytes) {
   }
   if (state.performance && allSkills(state).some((x) => x.name === 'Performance')) reviewNotes.push(`Performance specialty: ${state.performance}`);
   if (d.dayNight) reviewNotes.push('Stats, Mods and Mana shown as two numbers: the first is daytime, the second is night time.');
+  reviewNotes.push(...partyNotes(state));
   // A sheet can be downloaded before it's finished; it says so.
   const issues = errors(state);
   if (issues.length) reviewNotes.push(`${reviewNotes.length ? '\n' : ''}THIS SHEET STILL HAS ${issues.length} ISSUE${issues.length === 1 ? '' : 'S'}:`, ...issues.map((x) => `• ${x}`));

@@ -246,8 +246,17 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn("const { item, error } = quickGearItem(quickGear);", app)
         self.assertIn("if (kind in CUSTOM_KINDS) openGear.add(item.id);", app)
         # Gear bonus amounts are text fields: a type="number" field reports "+1" as blank, so it wouldn't save.
-        self.assertNotRegex(app, r'type="number"[^>]*data-bind="gear\.\$\{i\}\.bonuses')
-        self.assertEqual(app.count("bonusInput(`gear.${i}.bonuses."), 4)
+        # The shared bonus editor (gear items and Party buffs) binds under `${bind}`.
+        self.assertNotRegex(app, r'type="number"[^>]*data-bind="\$\{bind\}\.bonuses')
+        self.assertEqual(app.count("bonusInput(`${bind}.bonuses."), 4)
+        self.assertIn("${bonusPanel(`gear.${i}`, item,", app)
+        # Party buffs are edited as a draft: no re-render while typing (Tab reaches the next field),
+        # Save puts it on the sheet, and leaving the step with unsaved changes asks first.
+        self.assertIn("${bonusPanel(bind, edit, 'Bonuses while active', 'Adds to all your attacks while this buff is active.', false)}", app)
+        self.assertIn('data-bind="${bind}.name" value=', app)
+        self.assertIn('data-buff-save="${id}">Save buff</button>', app)
+        self.assertIn("if (activeStep === 'party' && step !== 'party' && buffDrafts.size) {", app)
+        self.assertIn("if (activeStep === 'party' && unsavedBuffs().length) event.preventDefault();", app)
         self.assertEqual(app.count("boundValue(target)"), 2)  # the change and input handlers
         # A damage bonus with a condition but no amount is flagged on its row and when saving.
         self.assertIn("[damageBonusProblem(x)] || ''", app)

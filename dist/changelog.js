@@ -3,6 +3,20 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.17',
+    date: '2026-11-25',
+    title: 'Party',
+    items: [
+      'New optional Party step after Equipment: name your Party and keep notes about it; both go in the sheet’s notes',
+      'Party buffs: add a bonus a party member gives the whole party, with who it’s from, e.g. Protective Aura from Donut, DR +2',
+      'A Party buff takes the same bonuses as a magic item (Stats, DR, Skills and damage) and applies while it’s ticked Active; untick it when it doesn’t apply',
+      'Edit a buff, then Save buff to put it on your sheet (or Cancel); Tab moves through its fields without closing the editor, and leaving the Party step or the page with unsaved changes asks first',
+      'Party buff Stats raise Enhanced Stats, its DR is listed in the sheet’s DR Buffs box, its Skill bonuses work like gear’s, and its damage bonuses add to all your attacks',
+      'Active Party buffs fill the sheet’s External Buffs (Max 3) box, one per row; only 3 can be active at a time',
+      'Active Party buffs are listed in the sheet’s notes',
+    ],
+  },
+  {
     version: '0.16',
     date: '2026-11-24',
     title: 'Damage bonuses on items',

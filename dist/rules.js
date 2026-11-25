@@ -5,6 +5,7 @@ import {
   gearItems, gearName, gearStatBonuses, gearSkillBonuses, gearDr, equipmentErrors, normalizeGearItem, bonusText,
   equippedGear, damageBonuses, damageBonusText,
 } from './equipment.js';
+import { normalizeParty, partyStatBonuses, partySkillBonuses, partyDr, partyDamageBonuses, partyErrors } from './party.js';
 
 // Source-bound rules for the first-draft builder.
 // Approved sources only:
@@ -256,6 +257,8 @@ export function initialState() {
     achievements: '',
     clubs: { desperado: false, vanquisher: false },
     female: false,
+    // Optional Party step: the party's name, notes and buffs.
+    party: { name: '', notes: '', buffs: [] },
   };
 }
 
@@ -287,6 +290,7 @@ export function normalizeState(raw) {
   merged.levelUps = Array.isArray(raw.levelUps) ? raw.levelUps : [];
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
+  merged.party = normalizeParty(raw.party);
   merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
   merged.portrait = validPortrait(raw.portrait) ? raw.portrait : '';
   // Class names corrected since a crawler was saved.
@@ -378,9 +382,13 @@ export function allAttacks(state) {
         item,
       };
     });
-  // Damage bonuses: a weapon's own, plus every other equipped item's.
-  const worn = equippedGear(state).filter((item) => item.kind !== 'weapon')
-    .flatMap((item) => damageBonuses(item).map((x) => ({ ...x, from: gearName(item) })));
+  // Damage bonuses: a weapon's own, plus every other equipped item's and
+  // every active Party buff's.
+  const worn = [
+    ...equippedGear(state).filter((item) => item.kind !== 'weapon')
+      .flatMap((item) => damageBonuses(item).map((x) => ({ ...x, from: gearName(item) }))),
+    ...partyDamageBonuses(state),
+  ];
   return [...skills, ...items].map(({ item, ...attack }) => {
     const bonuses = [...(item ? damageBonuses(item) : []), ...worn];
     if (!bonuses.length) return attack;
@@ -682,7 +690,8 @@ export function skillsWithRaceClass(state, options = {}) {
   return computeSkills(state, options).skills;
 }
 
-// Skills as the sheet shows them: computeSkills plus bonuses from equipped gear.
+// Skills as the sheet shows them: computeSkills plus bonuses from equipped
+// gear and active Party buffs (both work the same way).
 // - Rank bonuses obey the Skill's Rank limit (15, or 20 where a Race/Class
 //   allows it) like any other Ranks; the excess does nothing (user ruling). A
 //   Rank bonus to a Skill the crawler lacks grants it while equipped.
@@ -692,13 +701,17 @@ export function skillsWithRaceClass(state, options = {}) {
 export function allSkills(state) {
   const skills = computeSkills(state).skills;
   const find = (name) => skills.find((x) => x.name.toLowerCase() === name.toLowerCase());
-  gearSkillBonuses(state).forEach(({ name, ranks, type, item }) => {
+  const bonuses = [
+    ...gearSkillBonuses(state).map((x) => ({ ...x, from: `Gear: ${x.item}` })),
+    ...partySkillBonuses(state).map((x) => ({ ...x, from: `Party: ${x.buff}` })),
+  ];
+  bonuses.forEach(({ name, ranks, type, from }) => {
     const sign = ranks > 0 ? '+' : '';
     if (type === 'check') {
       const skill = find(name);
       if (!skill) return;
       skill.checkBonus = (skill.checkBonus || 0) + ranks;
-      skill.notes = [skill.notes, `${sign}${ranks} to checks (Gear: ${item}).`].filter(Boolean).join(' ');
+      skill.notes = [skill.notes, `${sign}${ranks} to checks (${from}).`].filter(Boolean).join(' ');
       return;
     }
     let skill = find(name);
@@ -711,10 +724,10 @@ export function allSkills(state) {
     const after = Math.max(0, Math.min(Math.max(before, rankLimit(state, skill.name)), before + ranks));
     skill.rank = after;
     skill.gearRanks = (skill.gearRanks || 0) + (after - before);
-    skill.source = [skill.source, `Gear: ${item} ${sign}${ranks}`].filter(Boolean).join('; ');
+    skill.source = [skill.source, `${from} ${sign}${ranks}`].filter(Boolean).join('; ');
     if (after - before < ranks && ranks > 0) {
       const lost = ranks - (after - before);
-      skill.notes = [skill.notes, `${lost} gear Rank${lost === 1 ? '' : 's'} over the Rank ${rankLimit(state, skill.name)} limit ha${lost === 1 ? 's' : 've'} no effect.`].filter(Boolean).join(' ');
+      skill.notes = [skill.notes, `${lost} ${from.startsWith('Party') ? 'Party buff' : 'gear'} Rank${lost === 1 ? '' : 's'} over the Rank ${rankLimit(state, skill.name)} limit ha${lost === 1 ? 's' : 've'} no effect.`].filter(Boolean).join(' ');
     }
   });
   return skills.filter((x) => x.rank > 0 || !x.gearRanks);
@@ -755,12 +768,14 @@ export function unenhancedStats(state) {
   return out;
 }
 
-// Only equipment changes Enhanced Stats: Unenhanced plus equipped gear bonuses
-// (items in the Inventory or Hotlist give none, p. 98), never below 1.
+// Only equipment and Party buffs change Enhanced Stats: Unenhanced plus
+// equipped gear bonuses (items in the Inventory or Hotlist give none, p. 98)
+// and active Party buffs, never below 1.
 export function enhancedStats(state) {
   const out = unenhancedStats(state);
   const bonus = gearStatBonuses(state);
-  stats.forEach((key) => { if (out[key] !== '') out[key] = Math.max(1, out[key] + bonus[key]); });
+  const party = partyStatBonuses(state);
+  stats.forEach((key) => { if (out[key] !== '') out[key] = Math.max(1, out[key] + bonus[key] + party[key]); });
   // A custom "Stat is capped at 10" detriment holds even against gear (p. 161).
   raceClassEffects(state).filter((x) => x.type === 'statCap' && x.strict).forEach((x) => {
     if (out[x.stat] !== '') out[x.stat] = Math.min(out[x.stat], x.max);
@@ -786,8 +801,11 @@ export function dayNightStats(state) {
 }
 
 export function damageResistance(state) {
-  const parts = raceClassEffects(state).filter((x) => x.type === 'dr').map((x) => ({ value: x.value, from: x.from }));
-  // Race/Class DR goes in the sheet's Buffs box; equipped gear DR in its Armor box.
+  const parts = [
+    ...raceClassEffects(state).filter((x) => x.type === 'dr').map((x) => ({ value: x.value, from: x.from })),
+    ...partyDr(state),
+  ];
+  // Race/Class and Party DR go in the sheet's Buffs box; equipped gear DR in its Armor box.
   const armor = gearDr(state);
   return { parts, armor, total: armor + parts.reduce((sum, x) => sum + x.value, 0) };
 }
@@ -1187,6 +1205,7 @@ export function errors(state) {
   out.push(...raceClassErrors(state));
   out.push(...advancementErrors(state));
   out.push(...equipmentErrors(state));
+  out.push(...partyErrors(state));
 
   return [...new Set(out)];
 }
@@ -1220,6 +1239,7 @@ export function stepCompletion(state) {
     raceclass: raceClassErrors(state).length === 0,
     advancement: advancementErrors(state).length === 0,
     equipment: equipmentErrors(state).length === 0,
+    party: partyErrors(state).length === 0,
     review: errors(state).length === 0,
   };
 }

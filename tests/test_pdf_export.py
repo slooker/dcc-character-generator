@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-MODULES = ("details.js", "races-classes.js", "builds.js", "equipment.js", "rules.js", "skill-text.js", "pdf.js")
+MODULES = ("details.js", "races-classes.js", "builds.js", "equipment.js", "party.js", "rules.js", "skill-text.js", "pdf.js")
 
 
 def export_pdf(state_js: str) -> PdfReader:

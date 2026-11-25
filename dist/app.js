@@ -23,6 +23,7 @@ import {
 } from './account.js';
 import { aboutView } from './about.js';
 import { changelogView, VERSION } from './changelog.js';
+import { newPartyBuff, normalizePartyBuff, buffLabel, activePartyBuffs, partyErrors, buffErrors, MAX_PARTY_BUFFS, MAX_ACTIVE_BUFFS } from './party.js';
 import { workshop, loadWorkshop, workshopView, buildEditorView, workshopClick, workshopChange, workshopInput, snapshot } from './workshop.js';
 
 const STORAGE_KEY = 'dcc-crawler-builder-v1';
@@ -38,6 +39,7 @@ const steps = [
   ['raceclass', 'Race & Class'],
   ['advancement', 'Level & Skills'],
   ['equipment', 'Equipment'],
+  ['party', 'Party (optional)'],
   ['review', 'Review & PDF'],
 ];
 
@@ -98,15 +100,26 @@ function setNotice(message, timeout = 2600) {
 function setPath(path, value) {
   const parts = path.split('.');
   let cursor = state;
+  // "buffDraft.<id>.…" edits an unsaved Party buff, not the crawler.
+  const draft = parts[0] === 'buffDraft' ? buffDrafts.get(parts[1]) : null;
+  if (draft) {
+    parts.splice(0, 2);
+    cursor = draft.buff;
+  }
   while (parts.length > 1) {
     const key = parts.shift();
     cursor = cursor[key];
   }
   cursor[parts[0]] = value;
-  saveState();
+  if (!draft) saveState();
 }
 
 function navigate(step) {
+  if (activeStep === 'party' && step !== 'party' && buffDrafts.size) {
+    const unsaved = unsavedBuffs();
+    if (unsaved.length && !confirm(`${unsaved.map((x) => buffLabel(x.buff) || 'A new Party buff').join(', ')} ${unsaved.length === 1 ? 'has' : 'have'} unsaved changes. Leave without saving?`)) return;
+    buffDrafts.clear();
+  }
   if (step !== 'identity') openedCrawler = false;
   if ((step === 'workshop' || step === 'build-edit') && !verified()) {
     setNotice(workshopLockedMessage(), 5000);
@@ -636,7 +649,7 @@ function reviewStep() {
   const skills = allSkills(state);
   const attacksForSheet = attackRowsForSheet(state);
   return `
-    <p class="eyebrow">STEP 12 · REVIEW & EXPORT</p>
+    <p class="eyebrow">STEP 13 · REVIEW & EXPORT</p>
     <h1>${issues.length ? 'Finish the crawler.' : 'Crawler ready for the sheet.'}</h1>
     <p class="intro">Nothing is randomly assigned except the crawler number. Mandatory calculations are derived automatically from your choices.</p>
     <section class="panel ${issues.length ? 'warning-panel' : 'success-panel'}">
@@ -656,7 +669,7 @@ function reviewStep() {
       <ul class="issues neutral">${notes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
     </section>
     <div class="actions">
-      <button class="secondary" data-nav="equipment">Back</button>
+      <button class="secondary" data-nav="party">Back</button>
       <div class="action-right">
         <button class="secondary danger-button" data-action="new-crawler">Start a new crawler</button>
         <button class="primary" data-action="download" ${exporting ? 'disabled' : ''}>${exporting ? 'Building PDF…' : issues.length ? 'Download sheet with issues' : 'Download filled character sheet'}</button>
@@ -958,7 +971,7 @@ const quickGear = { kind: 'item', location: 'inventory', name: '', qty: '1', spe
 // A gear bonus amount. Text, not type="number": a number field reports "+1"
 // as blank, so the bonus would silently not save. "+1" is stored as "1";
 // equipmentErrors() flags anything that isn't a whole number.
-const bonusInput = (bind, value, placeholder) => `<input maxlength="4" autocomplete="off" data-bind="${bind}" data-bonus data-rerender="true" value="${esc(value)}" placeholder="${placeholder}">`;
+const bonusInput = (bind, value, placeholder, live = true) => `<input maxlength="4" autocomplete="off" data-bind="${bind}" data-bonus ${live ? 'data-rerender="true"' : ''} value="${esc(value)}" placeholder="${placeholder}">`;
 const boundValue = (target) => (target.matches('[data-bonus]') ? stripPlus(target.value) : target.value);
 const QUICK_KINDS = [...ITEM_KINDS, ['custom', 'Custom item…'], ['custom-weapon', 'Custom weapon…']];
 
@@ -1003,6 +1016,40 @@ function quickGoldPanel() {
     </form>`;
 }
 
+// The Stat, DR, Skill and damage bonus editor shared by gear items and Party
+// buffs. `bind` is the data-bind path of the item or buff (e.g. "gear.3"),
+// `damageNote` says what its damage bonuses add to. With `live` off, changes
+// don't re-render the page (a draft editor, where Tab must reach the next field).
+function bonusPanel(bind, item, title, damageNote, live = true) {
+  const bonus = bonusText(item);
+  const stats = item.bonuses.stats;
+  const id = esc(item.id);
+  const rerender = live ? 'data-rerender="true"' : '';
+  const field = (label, html, cls = '') => `<label class="field ${cls}"><span class="field-label">${label}</span>${html}</label>`;
+  return `<details class="gear-bonuses" data-gear-bonuses="${id}" ${(gearBonusesOpen.get(item.id) ?? !!bonus) ? 'open' : ''}>
+      <summary>${title}${bonus ? `: ${esc(bonus)}` : ''}</summary>
+      <div class="gear-dr">${field('Damage Resistance (DR)', bonusInput(`${bind}.bonuses.dr`, item.bonuses.dr, '+2', live))}</div>
+      <p class="field-label gear-bonus-heading">Stat bonuses</p>
+      <div class="gear-stat-grid">${STAT_KEYS.map((key) => field(key, bonusInput(`${bind}.bonuses.stats.${key}`, stats[key] ?? '', '0', live))).join('')}</div>
+      ${item.bonuses.skills.map((x, j) => `<div class="gear-skill-row">
+        ${field('Skill or Spell', `<input list="gear-skill-names" data-bind="${bind}.bonuses.skills.${j}.name" ${rerender} value="${esc(x.name)}" maxlength="60">`, 'gear-wide')}
+        ${field('Bonus to', `<select data-bind="${bind}.bonuses.skills.${j}.type" ${rerender}>${SKILL_BONUS_TYPES.map(([v, label]) => `<option value="${v}" ${x.type === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
+        ${field('Amount', bonusInput(`${bind}.bonuses.skills.${j}.ranks`, x.ranks, '+1', live))}
+        <button type="button" class="secondary small" data-remove-gear-skill="${id}:${j}">Remove</button>
+      </div>`).join('')}
+      <button type="button" class="secondary small" data-add-gear-skill="${id}">+ Skill bonus</button>
+      <p class="muted micro">Skill Ranks can't take a Skill past its Rank limit (15, or 20 if your Race or Class allows); extra Ranks do nothing. A bonus to checks isn't Ranks, so it always applies.</p>
+      ${item.bonuses.damage.map((x, j) => `<div class="gear-skill-row">
+        ${field('Damage', bonusInput(`${bind}.bonuses.damage.${j}.amount`, x.amount, '+1', live))}
+        ${field('Only when <span class="optional">optional</span>', `<input data-bind="${bind}.bonuses.damage.${j}.condition" ${rerender} value="${esc(x.condition)}" maxlength="80" placeholder="e.g. hitting injured creatures">`, 'gear-wide')}
+        <button type="button" class="secondary small" data-remove-gear-damage="${id}:${j}">Remove</button>
+      </div>
+      ${{ missing: '<p class="error micro">Enter a Damage amount, e.g. 1. With no amount this bonus does nothing.</p>', amount: '<p class="error micro">The Damage amount must be a whole number, e.g. 1 or -1.</p>' }[damageBonusProblem(x)] || ''}`).join('')}
+      <button type="button" class="secondary small" data-add-gear-damage="${id}">+ Damage bonus</button>
+      <p class="muted micro">${damageNote} With no condition it’s added to the Damage Mod; with one, it’s noted on the attack.</p>
+    </details>`;
+}
+
 function gearCard(item, i) {
   const spellItem = item.kind === 'scroll' || item.kind === 'spellbook';
   const equipped = isEquipped(item.location);
@@ -1013,7 +1060,6 @@ function gearCard(item, i) {
     ? field('Spell', `<select data-bind="gear.${i}.spell" data-rerender="true"><option value="">Choose a Spell</option>${spellNames.map((name) => `<option ${item.spell === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>`, 'gear-wide')
       + field('Rank', `<input type="number" min="1" max="20" step="1" data-bind="gear.${i}.rank" data-rerender="true" value="${esc(item.rank)}">`)
     : field('Name', `<input data-bind="gear.${i}.name" value="${esc(item.name)}" maxlength="80" placeholder="${item.kind === 'potion' ? 'e.g. Healing Potion' : 'e.g. Enchanted Toe Ring'}">`, 'gear-wide');
-  const stats = item.bonuses.stats;
   const id = esc(item.id);
   const label = gearName(item) || `New ${KIND_LABELS[item.kind].toLowerCase()}`;
   const open = openGear.has(item.id) || !gearName(item);
@@ -1045,27 +1091,7 @@ function gearCard(item, i) {
       ${item.location === 'accessories' ? field('Accessory type', `<select data-bind="gear.${i}.accessoryType" data-rerender="true">${ACCESSORY_TYPES.map(([v, label]) => `<option value="${v}" ${item.accessoryType === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`) : ''}
     </div>
     ${field('Description <span class="optional">optional</span>', `<textarea data-bind="gear.${i}.description" maxlength="300" rows="2">${esc(item.description)}</textarea>`)}
-    <details class="gear-bonuses" data-gear-bonuses="${id}" ${(gearBonusesOpen.get(item.id) ?? !!bonus) ? 'open' : ''}>
-      <summary>Bonuses when equipped${bonus ? `: ${esc(bonus)}` : ''}</summary>
-      <div class="gear-stat-grid">${STAT_KEYS.map((key) => field(key, bonusInput(`gear.${i}.bonuses.stats.${key}`, stats[key] ?? '', '0'))).join('')}
-        ${field('DR', bonusInput(`gear.${i}.bonuses.dr`, item.bonuses.dr, '0'))}</div>
-      ${item.bonuses.skills.map((x, j) => `<div class="gear-skill-row">
-        ${field('Skill or Spell', `<input list="gear-skill-names" data-bind="gear.${i}.bonuses.skills.${j}.name" data-rerender="true" value="${esc(x.name)}" maxlength="60">`, 'gear-wide')}
-        ${field('Bonus to', `<select data-bind="gear.${i}.bonuses.skills.${j}.type" data-rerender="true">${SKILL_BONUS_TYPES.map(([v, label]) => `<option value="${v}" ${x.type === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
-        ${field('Amount', bonusInput(`gear.${i}.bonuses.skills.${j}.ranks`, x.ranks, '+1'))}
-        <button type="button" class="secondary small" data-remove-gear-skill="${esc(item.id)}:${j}">Remove</button>
-      </div>`).join('')}
-      <button type="button" class="secondary small" data-add-gear-skill="${esc(item.id)}">+ Skill bonus</button>
-      <p class="muted micro">Skill Ranks can't take a Skill past its Rank limit (15, or 20 if your Race or Class allows); extra Ranks do nothing. A bonus to checks isn't Ranks, so it always applies.</p>
-      ${item.bonuses.damage.map((x, j) => `<div class="gear-skill-row">
-        ${field('Damage', bonusInput(`gear.${i}.bonuses.damage.${j}.amount`, x.amount, '+1'))}
-        ${field('Only when <span class="optional">optional</span>', `<input data-bind="gear.${i}.bonuses.damage.${j}.condition" data-rerender="true" value="${esc(x.condition)}" maxlength="80" placeholder="e.g. hitting injured creatures">`, 'gear-wide')}
-        <button type="button" class="secondary small" data-remove-gear-damage="${esc(item.id)}:${j}">Remove</button>
-      </div>
-      ${{ missing: '<p class="error micro">Enter a Damage amount, e.g. 1. With no amount this bonus does nothing.</p>', amount: '<p class="error micro">The Damage amount must be a whole number, e.g. 1 or -1.</p>' }[damageBonusProblem(x)] || ''}`).join('')}
-      <button type="button" class="secondary small" data-add-gear-damage="${esc(item.id)}">+ Damage bonus</button>
-      <p class="muted micro">${item.kind === 'weapon' ? 'Adds to this weapon’s attacks.' : 'Adds to all your attacks while this item is equipped.'} With no condition it’s added to the Damage Mod; with one, it’s noted on the attack.</p>
-    </details>
+    ${bonusPanel(`gear.${i}`, item, 'Bonuses when equipped', item.kind === 'weapon' ? 'Adds to this weapon’s attacks.' : 'Adds to all your attacks while this item is equipped.')}
     ${item.kind === 'potion' ? '<p class="muted micro">Single use. In combat, no more than one potion every other round (Potion Sickness).</p>' : ''}
     ${item.kind === 'spellbook' ? `<div class="gear-use"><button type="button" class="secondary small" data-gear-read="${esc(item.id)}" ${item.spell && Number(item.rank) >= 1 ? '' : 'disabled'}>Read it</button><span class="muted micro">Grants the Spell at its Rank, then the book disappears.</span></div>` : ''}
     ${item.kind === 'scroll' ? '<p class="muted micro">Casts the Spell once at its set Rank for no Mana, then turns to dust.</p>' : ''}
@@ -1106,7 +1132,7 @@ function equipmentStep() {
       <div class="panel-head"><h2>Items</h2><span class="ref">${gearItems(state).length} carried</span></div>
       ${quickAddPanel()}
       ${state.gear.map(gearCard).join('') || '<p class="muted">No items yet. Add what your crawler has found, bought or crafted.</p>'}
-      <datalist id="gear-skill-names">${[...new Set([...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)])].map((name) => `<option value="${esc(name)}">`).join('')}</datalist>
+      ${skillNamesList()}
     </section>
     <section class="panel">
       <div class="panel-head"><h2>Wealth & lifting</h2>${sourceRef('Gear pp. 98-99')}</div>
@@ -1134,7 +1160,86 @@ function equipmentStep() {
       <div class="panel-head"><h2>From character creation</h2>${sourceRef('Starting Gear step')}</div>
       ${startingPossessions()}
     </section>
-    ${actions('advancement', 'review')}
+    ${actions('advancement', 'party')}
+  `;
+}
+
+// Suggestions for a bonus's Skill or Spell name.
+function skillNamesList() {
+  return `<datalist id="gear-skill-names">${[...new Set([...allSkills(state).map((x) => x.name), ...skillCatalog.map((x) => x.name)])].map((name) => `<option value="${esc(name)}">`).join('')}</datalist>`;
+}
+
+// Party buffs being edited: id -> { buff, saved, isNew }. Edits go to the
+// draft copy and reach the crawler only on Save; `saved` is the draft as it
+// was opened, to tell whether anything changed.
+const buffDrafts = new Map();
+
+function openBuffDraft(buff, isNew = false) {
+  const copy = normalizePartyBuff(JSON.parse(JSON.stringify(buff)));
+  buffDrafts.set(copy.id, { buff: copy, saved: JSON.stringify(copy), isNew });
+}
+
+const unsavedBuffs = () => [...buffDrafts.values()].filter((x) => JSON.stringify(x.buff) !== x.saved || (x.isNew && buffLabel(x.buff)));
+
+function buffCard(buff, i) {
+  const field = (label, html, cls = '') => `<label class="field ${cls}"><span class="field-label">${label}</span>${html}</label>`;
+  const id = esc(buff.id);
+  const draft = buffDrafts.get(buff.id);
+  const label = buffLabel(buff) || 'New Party buff';
+  const bonus = bonusText(buff);
+  const head = `<div class="gear-row buff-row">
+      <div class="gear-row-name"><strong>${esc(label)}</strong>
+        ${bonus ? `<span class="muted micro">${esc(bonus)}${buff.active ? '' : ' (not active)'}</span>` : ''}</div>
+      ${draft?.isNew ? '<span></span>' : `<label class="check"><input type="checkbox" data-bind="party.buffs.${i}.active" ${buff.active ? 'checked' : ''}> Active</label>`}
+      <div class="gear-row-actions">
+        ${draft ? '' : `<button type="button" class="secondary small" data-buff-edit="${id}">Edit</button>`}
+        <button type="button" class="icon-button" data-remove-buff="${id}" aria-label="Remove ${esc(label)}">×</button>
+      </div>
+    </div>`;
+  if (!draft) return `<div class="item-card gear-card compact ${buff.active ? 'equipped' : ''}">${head}</div>`;
+  const edit = draft.buff;
+  const bind = `buffDraft.${id}`;
+  const problems = draft.problems || [];
+  return `<div class="item-card gear-card buff-editor ${buff.active ? 'equipped' : ''}">
+    ${head}
+    <p class="muted micro gear-status">${draft.isNew ? 'New buff · not on your sheet until you save it' : 'Editing · changes reach your sheet when you save'}</p>
+    <div class="fields gear-fields">
+      ${field('Buff name', `<input data-bind="${bind}.name" value="${esc(edit.name)}" maxlength="80" placeholder="e.g. Protective Aura">`, 'gear-wide')}
+      ${field('From <span class="optional">optional</span>', `<input data-bind="${bind}.from" value="${esc(edit.from)}" maxlength="60" placeholder="Who gives it, e.g. Donut">`, 'gear-wide')}
+    </div>
+    ${field('Description <span class="optional">optional</span>', `<textarea data-bind="${bind}.description" maxlength="300" rows="2" placeholder="e.g. Only while she’s in the party">${esc(edit.description)}</textarea>`)}
+    ${bonusPanel(bind, edit, 'Bonuses while active', 'Adds to all your attacks while this buff is active.', false)}
+    ${problems.length ? `<div class="validation-box"><strong>Fix these to save:</strong><ul>${problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    <div class="buff-save">
+      <button type="button" class="primary" data-buff-save="${id}">Save buff</button>
+      <button type="button" class="secondary" data-buff-cancel="${id}">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function partyStep() {
+  const party = state.party;
+  const issues = partyErrors(state);
+  return `
+    <p class="eyebrow">STEP 12 · PARTY <span class="optional">optional</span></p>
+    <h1>Crawling with friends?</h1>
+    <p class="intro">Skip this step if you crawl alone. The Party's name and notes go in the sheet's notes. Party buffs work like magic items: up to ${MAX_ACTIVE_BUFFS} can be active, listed in the sheet's External Buffs box. While a buff is active, its Stat bonuses raise your Enhanced Stats, its DR is added in the sheet's DR Buffs box, and its Skill and damage bonuses apply.</p>
+    <section class="panel">
+      <div class="panel-head"><h2>Party</h2></div>
+      <div class="fields">
+        <label class="field"><span class="field-label">Party name <span class="optional">optional</span></span><input data-bind="party.name" value="${esc(party.name)}" maxlength="60" placeholder="e.g. Royal Court of Princess Donut"></label>
+      </div>
+      <label class="field"><span class="field-label">Notes <span class="optional">optional</span></span><textarea data-bind="party.notes" maxlength="500" rows="3" placeholder="Who's in it, what you've agreed, anything worth remembering">${esc(party.notes)}</textarea></label>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Buffs</h2><span class="ref">${activePartyBuffs(state).length}/${MAX_ACTIVE_BUFFS} active</span></div>
+      ${[...party.buffs, ...[...buffDrafts.values()].filter((x) => x.isNew).map((x) => x.buff)].map(buffCard).join('') || '<p class="muted">No Party buffs. Add one when a party member gives the whole party a bonus, e.g. +2 DR while she’s in the party.</p>'}
+      <button type="button" class="secondary" data-add-buff>+ Add Party buff</button>
+      ${skillNamesList()}
+      <p class="muted micro">Active buffs go in the sheet's External Buffs box, which holds ${MAX_ACTIVE_BUFFS}. Untick Active when a buff doesn't apply (say, she leaves the party) to keep it without its bonuses.</p>
+      ${issues.length ? `<div class="validation-box"><strong>Fix these:</strong><ul>${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    </section>
+    ${actions('equipment', 'review')}
   `;
 }
 
@@ -1151,6 +1256,7 @@ function renderMain() {
     raceclass: raceClassStep,
     advancement: advancementStep,
     equipment: equipmentStep,
+    party: partyStep,
     review: reviewStep,
     account: () => accountView(state),
     profile: profileView,
@@ -1376,6 +1482,7 @@ main.addEventListener('click', async (event) => {
 
   if (raceClassClick(event)) return;
   if (gearClick(event)) return;
+  if (partyClick(event)) return;
 
   const addItem = event.target.closest('[data-add-item]');
   if (addItem) {
@@ -1534,6 +1641,8 @@ const workshopContext = {
 };
 
 const gearById = (id) => state.gear.find((x) => x.id === id);
+// A gear item or Party buff, for the shared bonus editor's buttons.
+const bonusOwner = (id) => buffDrafts.get(id)?.buff || gearById(id) || state.party.buffs.find((x) => x.id === id);
 
 // Race & Class step: Show more, Expand All / Collapse All; true if handled.
 function raceClassClick(event) {
@@ -1554,6 +1663,61 @@ function raceClassClick(event) {
   });
   renderMain();
   main.querySelector('[data-rc-expand]')?.focus();
+  return true;
+}
+
+// Party step buttons (the bonus editor's go through gearClick); true if handled.
+function partyClick(event) {
+  const target = event.target.closest('[data-add-buff], [data-remove-buff], [data-buff-edit], [data-buff-save], [data-buff-cancel]');
+  if (!target) return false;
+  const { removeBuff, buffEdit, buffSave, buffCancel } = target.dataset;
+  if (buffEdit) {
+    openBuffDraft(state.party.buffs.find((x) => x.id === buffEdit));
+    renderMain();
+    main.querySelector(`[data-bind="buffDraft.${buffEdit}.name"]`)?.focus();
+    return true;
+  } else if (buffCancel) {
+    buffDrafts.delete(buffCancel);
+    renderMain();
+    return true;
+  } else if (buffSave) {
+    const draft = buffDrafts.get(buffSave);
+    const index = state.party.buffs.findIndex((x) => x.id === buffSave);
+    draft.problems = buffErrors(draft.buff, index === -1 ? state.party.buffs.length : index);
+    if (draft.problems.length) {
+      renderMain();
+      setNotice(draft.problems[0]);
+      return true;
+    }
+    // Active is set on the list, not in the editor. A new buff starts active
+    // unless the sheet's 3 External Buffs are already taken.
+    const full = activePartyBuffs(state).length >= MAX_ACTIVE_BUFFS;
+    const buff = normalizePartyBuff({ ...draft.buff, active: index === -1 ? !full : state.party.buffs[index].active });
+    if (index === -1) state.party.buffs.push(buff);
+    else state.party.buffs[index] = buff;
+    buffDrafts.delete(buffSave);
+    setNotice(index === -1 && full
+      ? `Saved ${buffLabel(buff)}, but not active: ${MAX_ACTIVE_BUFFS} External Buffs already are. Untick one to make room.`
+      : `Saved ${buffLabel(buff)} to your sheet.`, index === -1 && full ? 6000 : 2600);
+  } else if (removeBuff) {
+    const draft = buffDrafts.get(removeBuff);
+    const buff = state.party.buffs.find((x) => x.id === removeBuff) || draft?.buff;
+    if (buff && buffLabel(buff) && !confirm(`Remove ${buffLabel(buff)}?`)) return true;
+    buffDrafts.delete(removeBuff);
+    state.party.buffs = state.party.buffs.filter((x) => x.id !== removeBuff);
+  } else {
+    if (state.party.buffs.length + buffDrafts.size >= MAX_PARTY_BUFFS) {
+      setNotice(`Keep the Party buff list to ${MAX_PARTY_BUFFS} entries.`);
+      return true;
+    }
+    const buff = newPartyBuff();
+    openBuffDraft(buff, true);
+    renderMain();
+    main.querySelector(`[data-bind="buffDraft.${buff.id}.name"]`)?.focus();
+    return true;
+  }
+  saveState();
+  render();
   return true;
 }
 
@@ -1593,16 +1757,16 @@ function gearClick(event) {
     if (!readSpellbook(gearById(gearRead))) return true;
   } else if (addGearSkill) {
     gearBonusesOpen.set(addGearSkill, true);
-    gearById(addGearSkill).bonuses.skills.push({ name: '', ranks: '', type: 'rank' });
+    bonusOwner(addGearSkill).bonuses.skills.push({ name: '', ranks: '', type: 'rank' });
   } else if (removeGearSkill) {
     const [id, j] = removeGearSkill.split(':');
-    gearById(id).bonuses.skills.splice(Number(j), 1);
+    bonusOwner(id).bonuses.skills.splice(Number(j), 1);
   } else if (addGearDamage) {
     gearBonusesOpen.set(addGearDamage, true);
-    gearById(addGearDamage).bonuses.damage.push({ amount: '', condition: '' });
+    bonusOwner(addGearDamage).bonuses.damage.push({ amount: '', condition: '' });
   } else if (removeGearDamage) {
     const [id, j] = removeGearDamage.split(':');
-    gearById(id).bonuses.damage.splice(Number(j), 1);
+    bonusOwner(id).bonuses.damage.splice(Number(j), 1);
   } else if (takeOff) {
     // Starting clothing becomes an Inventory item so its slot is free.
     const item = normalizeGearItem({ ...newGearItem('item'), name: state.clothing[takeOff].trim(), description: 'Starting clothing' });
@@ -1724,6 +1888,11 @@ async function accountClick(event) {
 }
 
 accountBarEl.addEventListener('click', accountClick);
+
+// Closing or reloading the page with an unsaved Party buff asks first.
+window.addEventListener('beforeunload', (event) => {
+  if (activeStep === 'party' && unsavedBuffs().length) event.preventDefault();
+});
 
 // The account menu closes on a click elsewhere or Escape.
 document.addEventListener('click', (event) => {
@@ -1893,6 +2062,12 @@ main.addEventListener('change', (event) => {
         target.value = state[target.dataset.bind] ?? '';
         return;
       }
+    }
+    // The sheet's External Buffs box holds 3.
+    if (/^party\.buffs\.\d+\.active$/.test(target.dataset.bind) && value && activePartyBuffs(state).length >= MAX_ACTIVE_BUFFS) {
+      target.checked = false;
+      setNotice(`Only ${MAX_ACTIVE_BUFFS} External Buffs can be active at a time. Untick one first.`, 5000);
+      return;
     }
     const gearLocation = target.dataset.bind.match(/^gear\.(\d+)\.location$/);
     if (gearLocation) {
