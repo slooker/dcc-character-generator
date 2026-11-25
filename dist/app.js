@@ -5,7 +5,7 @@ import {
   stepCompletion, sizeNames, statMod, statValidationErrors, firstIncompleteBackgroundStage, backgroundStageComplete,
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
-  skillUpReport, levelPoints, rankLimit, CUSTOM_SKILL_CHECKS, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
+  skillUpReport, levelPoints, rankLimit, aiFavorParts, favorChange, FAVOR_GAINS, FAVOR_SPENDS, CUSTOM_SKILL_CHECKS, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
   PORTRAIT_MAX_UPLOAD, PORTRAIT_MAX_CHARS,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
@@ -37,7 +37,7 @@ const steps = [
   ['hotlist', 'Hotlist'],
   ['attacks', 'Sheet Attacks'],
   ['raceclass', 'Race & Class'],
-  ['advancement', 'Level & Skills'],
+  ['advancement', 'Level, Skills & AI Favor'],
   ['equipment', 'Equipment'],
   ['party', 'Party (optional)'],
   ['review', 'Review & PDF'],
@@ -49,8 +49,9 @@ let activeBackgroundStage = 0;
 let exporting = false;
 let draggedHotlistSlot = null;
 let touchHotlistDrag = null;
-// Unsaved "next level" and "new skill-up" forms on the Level & Skills step.
+// Unsaved "next level", "AI Favor" and "new skill-up" forms on the Level, Skills & AI Favor step.
 let levelDraft = { floor: '', stats: {} };
+let favorDraft = { reason: FAVOR_GAINS[0], amount: '1', floor: '', note: '' };
 let skillUpDraft = { skill: '', ranks: '1', floor: '', how: 'Skill Advancement Check', note: '', customName: '', customStat: 'None', customCheck: 'Unopposed', customDescription: '' };
 // The draft's Skill select value for a Skill that isn't in the book.
 const CUSTOM_SKILL = '__custom__';
@@ -810,7 +811,7 @@ function raceClassStep() {
     ${rcExpandButton([...(chosenRace?.custom ? [['race', chosenRace]] : []), ...raceOptions.map((x) => ['race', x]), ...(chosenClass?.custom ? [['class', chosenClass]] : []), ...classOptions.map((x) => ['class', x])])}
     <section class="panel">
       <div class="panel-head"><h2>Race</h2>${sourceRef('pp. 128-141')}</div>
-      <label class="field rc-floor">Floor the Race & Class were chosen on<input data-bind="raceClassFloor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.raceClassFloor)}"><small>Skill-ups logged on earlier floors count before Race/Class bonuses (Level & Skills step).</small></label>
+      <label class="field rc-floor">Floor the Race & Class were chosen on<input data-bind="raceClassFloor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.raceClassFloor)}"><small>Skill-ups logged on earlier floors count before Race/Class bonuses (Level, Skills & AI Favor step).</small></label>
       ${chosenRace && raceIssues.length ? ineligibleSelection(chosenRace, 'race', raceIssues) : ''}
       ${chosenRace && !raceIssues.length ? `<p>Selected: <strong>${esc(chosenRace.name)}</strong> <button type="button" class="secondary" data-clear="race">Keep original Race instead</button></p>` : ''}
       ${chosenRace ? choiceControls('race', chosenRace, state.raceChoices) : ''}
@@ -875,6 +876,44 @@ function draftSkillName() {
   return skillUpDraft.skill === CUSTOM_SKILL ? skillUpDraft.customName.trim() : skillUpDraft.skill;
 }
 
+const favorReasonOptions = (selected) => [['Gained', FAVOR_GAINS], ['Spent', FAVOR_SPENDS]]
+  .map(([label, reasons]) => `<optgroup label="${label}">${reasons.map((r) => `<option ${r === selected ? 'selected' : ''}>${esc(r)}</option>`).join('')}</optgroup>`).join('');
+
+function favorPanel() {
+  const parts = aiFavorParts(state);
+  if (!parts) return `<section class="panel"><div class="panel-head"><h2>AI Favor</h2>${sourceRef('p. 112')}</div><p class="muted">Choose Human or animal on the Identity step first.</p></section>`;
+  const log = state.favorLog || [];
+  const signed = (n) => (n < 0 ? `−${-n}` : `+${n}`);
+  const breakdown = [
+    `${parts.start} start (${state.kind === 'human' ? 'Human' : 'animal'})`,
+    parts.levels ? `${signed(parts.levels)} for levels` : '',
+    log.length ? `${signed(parts.log)} logged` : '',
+  ].filter(Boolean).join(' ');
+  return `
+    <section class="panel">
+      <div class="panel-head"><h2>AI Favor ${parts.total}</h2>${sourceRef('p. 112')}</div>
+      <p class="muted micro">${esc(breakdown)}. Each level adds 1 automatically. Spend 1 to reroll a d20 (not a Natural 1) or take an extra non-Attack Action. Wimpy weapons and Spells grant their AI Favor rating when used for most attacks in a combat of 3+ rounds.</p>
+      <div class="adv-grid adv-skill-form">
+        <label class="field adv-wide">Reason<select data-favor-draft="reason">${favorReasonOptions(favorDraft.reason)}</select></label>
+        <label class="field">Amount<input type="number" min="1" data-favor-draft="amount" value="${esc(favorDraft.amount)}"></label>
+        <label class="field">Floor<input inputmode="numeric" maxlength="3" data-favor-draft="floor" value="${esc(favorDraft.floor)}" placeholder="${currentFloor(state)}"></label>
+        <label class="field adv-wide">Note <span class="optional">optional</span><input data-favor-draft="note" maxlength="120" value="${esc(favorDraft.note)}" placeholder="e.g. Survived the goblin rave"></label>
+      </div>
+      <div class="action-right"><button type="button" class="primary" data-action="add-favor">${FAVOR_SPENDS.includes(favorDraft.reason) ? 'Log spent AI Favor' : 'Log AI Favor'}</button></div>
+      ${log.length ? `<div class="table-wrap"><table class="adv-log"><thead><tr><th>Reason</th><th>Amount</th><th>Floor</th><th>Note</th><th>Change</th><th></th></tr></thead><tbody>
+        ${log.map((entry, i) => `<tr>
+          <td><select data-bind="favorLog.${i}.reason" data-rerender="true">${favorReasonOptions(entry.reason)}</select></td>
+          <td><input type="number" min="1" data-bind="favorLog.${i}.amount" data-rerender="true" value="${esc(entry.amount)}"></td>
+          <td><input inputmode="numeric" maxlength="3" data-bind="favorLog.${i}.floor" value="${esc(entry.floor)}"></td>
+          <td><input data-bind="favorLog.${i}.note" maxlength="120" value="${esc(entry.note)}"></td>
+          <td class="nowrap">${signed(favorChange(entry))}</td>
+          <td><button type="button" class="secondary" data-delete-favor="${i}" aria-label="Delete AI Favor entry">Delete</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>` : '<p class="muted">No AI Favor logged yet.</p>'}
+      ${parts.total < 0 ? `<p class="error">AI Favor can’t go below 0 (${-parts.total} more spent than gained).</p>` : ''}
+    </section>`;
+}
+
 function advancementStep() {
   const d = derived(state);
   const report = skillUpReport(state);
@@ -883,14 +922,14 @@ function advancementStep() {
   const levels = state.levelUps || [];
   const ups = state.skillUps || [];
   return `
-    <p class="eyebrow">STEP 10 · LEVEL & SKILLS</p>
-    <h1>Level up and track Skill Ranks</h1>
-    <p class="intro">Each level adds ${LEVEL_STAT_POINTS} Stat points to spend on any Stats. Log Skill and Spell Ranks as your crawler gains them during play, with the floor it happened on.</p>
+    <p class="eyebrow">STEP 10 · LEVEL, SKILLS & AI FAVOR</p>
+    <h1>Level up and track Skill Ranks and AI Favor</h1>
+    <p class="intro">Each level adds ${LEVEL_STAT_POINTS} Stat points to spend on any Stats and 1 AI Favor. Log Skill and Spell Ranks and AI Favor as your crawler gains or spends them during play, with the floor it happened on.</p>
     <section class="panel">
       <div class="panel-head"><h2>Level ${d.level} · Floor ${d.floor}</h2>${sourceRef('Stat points: user rule')}</div>
       <label class="field adv-floor">Current Floor<input data-bind="floor" data-rerender="true" inputmode="numeric" maxlength="3" value="${esc(state.floor)}"></label>
-      ${levels.length ? `<div class="table-wrap"><table><thead><tr><th>Level</th><th>Floor</th><th>Stat points</th><th></th></tr></thead><tbody>
-        ${levels.map((entry, i) => `<tr><td>${i + 2}</td><td>${esc(entry.floor)}</td><td>${stats.filter((k) => levelPoints(entry)[k]).map((k) => `+${levelPoints(entry)[k]} ${k}`).join(', ')}</td>
+      ${levels.length ? `<div class="table-wrap"><table><thead><tr><th>Level</th><th>Floor</th><th>Stat points</th><th>AI Favor</th><th></th></tr></thead><tbody>
+        ${levels.map((entry, i) => `<tr><td>${i + 2}</td><td>${esc(entry.floor)}</td><td>${stats.filter((k) => levelPoints(entry)[k]).map((k) => `+${levelPoints(entry)[k]} ${k}`).join(', ')}</td><td>+1</td>
           <td>${i === levels.length - 1 ? '<button type="button" class="secondary" data-action="undo-level">Undo</button>' : ''}</td></tr>`).join('')}
       </tbody></table></div>` : '<p class="muted">No levels gained yet. Starting crawlers are Level 1.</p>'}
       <h3>Gain Level ${d.level + 1}</h3>
@@ -898,10 +937,10 @@ function advancementStep() {
         ${stats.map((key) => `<label class="field">${esc(statNames[key])}<input type="number" min="0" max="${LEVEL_STAT_POINTS}" data-level-draft="${key}" value="${draftPoints[key] || ''}" placeholder="0"></label>`).join('')}
         <label class="field">Floor<input inputmode="numeric" maxlength="3" data-level-draft="floor" value="${esc(levelDraft.floor)}" placeholder="${d.floor}"></label>
       </div>
-      <div class="action-right"><span class="${draftTotal === LEVEL_STAT_POINTS ? 'success' : 'muted'}">${draftTotal}/${LEVEL_STAT_POINTS} points</span>
+      <div class="action-right"><span class="${draftTotal === LEVEL_STAT_POINTS ? 'success' : 'muted'}">${draftTotal}/${LEVEL_STAT_POINTS} points · +1 AI Favor</span>
         <button type="button" class="primary" data-action="add-level">Add level</button></div>
-      ${state.race === 'Human' ? `<p class="muted micro">Human: each level gained on or after Floor ${esc(state.raceClassFloor)} adds 1 AI Favor (now ${d.aiFavor}).</p>` : ''}
     </section>
+    ${favorPanel()}
     <section class="panel">
       <div class="panel-head"><h2>Skill & Spell log</h2>${sourceRef('Rank limits p. 128')}</div>
       <p class="muted micro">Rank ${RANK_CAP} is the limit, or ${EXTENDED_RANK_CAP} where your Race or Class allows it; extra Ranks are wasted. Ranks above ${RANK_CAP} come online on Floor ${HIGH_RANK_FLOOR}. ${state.race || state.className ? `Entries before Floor ${esc(state.raceClassFloor)} happened before your Race/Class bonuses.` : ''}</p>
@@ -1346,7 +1385,7 @@ main.addEventListener('click', async (event) => {
     return render();
   }
 
-  const action = event.target.closest('[data-action="add-level"], [data-action="undo-level"], [data-action="add-skill-up"]');
+  const action = event.target.closest('[data-action="add-level"], [data-action="undo-level"], [data-action="add-skill-up"], [data-action="add-favor"]');
   if (action?.dataset.action === 'add-level') {
     const points = levelPoints(levelDraft);
     const total = Object.values(points).reduce((a, b) => a + b, 0);
@@ -1358,6 +1397,17 @@ main.addEventListener('click', async (event) => {
   }
   if (action?.dataset.action === 'undo-level') {
     state.levelUps = (state.levelUps || []).slice(0, -1);
+    saveState();
+    return render();
+  }
+  if (action?.dataset.action === 'add-favor') {
+    const amount = Number(favorDraft.amount);
+    if (!(Number.isInteger(amount) && amount >= 1)) return setNotice('The AI Favor amount must be 1 or more.');
+    const entry = { ...favorDraft, floor: favorDraft.floor || state.floor };
+    const have = aiFavorParts(state)?.total ?? 0;
+    if (favorChange(entry) < 0 && -favorChange(entry) > have) return setNotice(`You only have ${have} AI Favor to spend.`);
+    state.favorLog = [...(state.favorLog || []), entry];
+    favorDraft = { ...favorDraft, amount: '1', note: '' };
     saveState();
     return render();
   }
@@ -1378,6 +1428,13 @@ main.addEventListener('click', async (event) => {
     }];
     skillUpDraft = { ...skillUpDraft, skill: '', ranks: '1', note: '', customName: '', customStat: 'None', customCheck: 'Unopposed', customDescription: '' };
     if (isCustom && existing) setNotice(`${name} is already a Skill, so the Ranks were logged to it.`);
+    saveState();
+    return render();
+  }
+
+  const deleteFavor = event.target.closest('[data-delete-favor]');
+  if (deleteFavor) {
+    state.favorLog = state.favorLog.filter((_, i) => i !== Number(deleteFavor.dataset.deleteFavor));
     saveState();
     return render();
   }
@@ -1795,7 +1852,7 @@ function readSpellbook(item) {
   const ranks = Math.max(0, rank - current);
   const floor = currentFloor(state);
   const message = ranks
-    ? `Read ${name}? ${item.spell} becomes Rank ${rank} (logged as +${ranks} on Floor ${floor} in Level & Skills), and the book disappears.`
+    ? `Read ${name}? ${item.spell} becomes Rank ${rank} (logged as +${ranks} on Floor ${floor} in Level, Skills & AI Favor), and the book disappears.`
     : `You already have ${item.spell} at Rank ${current}, so ${name} won't raise it. Read it anyway? The book disappears.`;
   if (!confirm(message)) return false;
   if (ranks) state.skillUps.push({ skill: item.spell, ranks: String(ranks), floor: String(floor), how: 'Potion or item', note: `Read ${name}` });
@@ -2024,9 +2081,10 @@ main.addEventListener('change', (event) => {
     renderMain();
     return main.querySelector('[data-quick-gear] input[name="name"], [data-quick-gear] select[name="spell"]')?.focus();
   }
-  const draft = event.target.closest('[data-level-draft], [data-skill-draft]');
+  const draft = event.target.closest('[data-level-draft], [data-skill-draft], [data-favor-draft]');
   if (draft) {
-    if (draft.dataset.levelDraft === 'floor') levelDraft.floor = draft.value;
+    if (draft.dataset.favorDraft) favorDraft[draft.dataset.favorDraft] = draft.value;
+    else if (draft.dataset.levelDraft === 'floor') levelDraft.floor = draft.value;
     else if (draft.dataset.levelDraft) levelDraft.stats[draft.dataset.levelDraft] = draft.value;
     else skillUpDraft[draft.dataset.skillDraft] = draft.value;
     return renderMain();

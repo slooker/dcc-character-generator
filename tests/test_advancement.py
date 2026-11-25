@@ -41,10 +41,23 @@ class AdvancementTests(unittest.TestCase):
         state = "crawler({ race: 'Pocket Kuma', stats: { Str: '6', Int: '5', Con: '4', Dex: '3', Cha: '2' }, levelUps: Array.from({ length: 4 }, () => ({ floor: '3', stats: { Str: 3 } })) })"
         self.assertEqual(self.val(f"unenhancedStats({state}).Str"), 10)  # 6 - 4 + 12, capped at 10
 
-    def test_human_gains_ai_favor_per_level_after_choosing_human(self) -> None:
+    def test_every_level_adds_one_ai_favor(self) -> None:
         levels = "[{ floor: '2', stats: { Str: 3 } }, { floor: '3', stats: { Str: 3 } }, { floor: '4', stats: { Str: 3 } }]"
-        self.assertEqual(self.val(f"derived(crawler({{ race: 'Human', levelUps: {levels} }})).aiFavor"), 3)  # 1 + 2 levels on floor 3+
-        self.assertEqual(self.val(f"derived(crawler({{ levelUps: {levels} }})).aiFavor"), 1)
+        self.assertEqual(self.val(f"derived(crawler({{ levelUps: {levels} }})).aiFavor"), 4)  # 1 + 3 levels
+        self.assertEqual(self.val(f"derived(crawler({{ race: 'Human', levelUps: {levels} }})).aiFavor"), 4)  # no extra for the Human Race
+        self.assertEqual(self.val(f"derived(crawler({{ race: 'Sasquatch', levelUps: {levels} }})).aiFavor"), 4)
+        self.assertEqual(self.val(f"derived(crawler({{ kind: 'animal', levelUps: {levels} }})).aiFavor"), 3)  # animal starts at 0 + 3 levels
+
+    def test_ai_favor_log_gains_and_spends(self) -> None:
+        log = "[{ reason: 'Wimpy weapon or Spell', amount: '2', floor: '1', note: '' }, { reason: 'Rerolled a d20', amount: '1', floor: '2', note: '' }]"
+        state = f"crawler({{ favorLog: {log} }})"
+        self.assertEqual(self.val(f"aiFavorParts({state})"), {"start": 1, "levels": 0, "log": 1, "total": 2})
+        self.assertEqual(self.val(f"advancementErrors({state})"), [])
+        overspent = self.val("advancementErrors(crawler({ favorLog: [{ reason: 'Extra non-Attack Action', amount: '3', floor: '1' }] }))")
+        self.assertTrue(any("can’t go below 0" in x for x in overspent), overspent)
+        bad = self.val("advancementErrors(crawler({ favorLog: [{ reason: 'Levelled up', amount: '0', floor: '1' }] }))")
+        self.assertTrue(any("choose a reason" in x for x in bad) and any("1 or more" in x for x in bad), bad)
+        self.assertEqual(self.val("normalizeState({ favorLog: 'nope' }).favorLog"), [])
 
     def test_skill_ups_cap_at_fifteen_and_report_waste(self) -> None:
         state = "crawler({ skillUps: [up('Club', 14, 1)] })"  # Club starts at Rank 3

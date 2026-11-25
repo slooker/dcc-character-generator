@@ -3,6 +3,19 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.18',
+    date: '2026-11-25',
+    title: 'AI Favor log',
+    items: [
+      'The Level & Skills step is now Level, Skills & AI Favor, with a new AI Favor panel',
+      'Every crawler gets +1 AI Favor for each level automatically, whatever their Race (the Human Race no longer adds extra)',
+      'Log AI Favor you gain (wimpy weapon or Spell, heroic deed, survived a foolish deed, stuck it to the showrunners, indulged the AI, Race/Class/item ability, other) or spend (d20 reroll, extra non-Attack Action, an ability, other), with the amount, floor and a note',
+      'The panel shows your AI Favor total and where it came from; logged entries can be edited or deleted, and you can’t spend more than you have',
+      'The sheet’s AI Favor box uses the new total',
+      'The level table on Level, Skills & AI Favor shows the +1 AI Favor each level gave, next to its Stat points',
+    ],
+  },
+  {
     version: '0.17',
     date: '2026-11-25',
     title: 'Party',

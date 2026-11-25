@@ -253,6 +253,8 @@ export function initialState() {
     raceClassFloor: 3,
     levelUps: [],
     skillUps: [],
+    // AI Favor gained or spent during play (levels add theirs automatically).
+    favorLog: [],
     popularity: '',
     achievements: '',
     clubs: { desperado: false, vanquisher: false },
@@ -289,6 +291,7 @@ export function normalizeState(raw) {
   merged.customClass = snapshot(raw.customClass);
   merged.levelUps = Array.isArray(raw.levelUps) ? raw.levelUps : [];
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
+  merged.favorLog = Array.isArray(raw.favorLog) ? raw.favorLog : [];
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
   merged.party = normalizeParty(raw.party);
   merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
@@ -569,6 +572,12 @@ export const RANK_CAP = 15;
 export const EXTENDED_RANK_CAP = 20;
 export const HIGH_RANK_FLOOR = 6;
 export const LEVEL_STAT_POINTS = 3;
+// AI Favor log reasons. Gains: "heroic deeds, surviving foolish ones, sticking
+// it to the showrunners, or indulging one of my fetishes" (p. 112); low-damage
+// Attacks with an AI Favor rating (Skills p. 175, Spells p. 202). Spends: a d20
+// reroll or an extra non-Attack Action (p. 112), or a Race/Class/item ability.
+export const FAVOR_GAINS = ['Wimpy weapon or Spell', 'Heroic deed', 'Survived a foolish deed', 'Stuck it to the showrunners', 'Indulged the AI', 'Race, Class or item ability', 'Other gain'];
+export const FAVOR_SPENDS = ['Rerolled a d20', 'Extra non-Attack Action', 'Spent on an ability', 'Other spend'];
 
 const positiveInt = (value, fallback = null) => {
   const n = Number(value);
@@ -927,6 +936,13 @@ export function advancementErrors(state) {
   });
   const known = new Set(allSkills(state).map((x) => x.name.toLowerCase()));
   const custom = customSkills(state);
+  (state.favorLog || []).forEach((entry, i) => {
+    if (![...FAVOR_GAINS, ...FAVOR_SPENDS].includes(entry.reason)) out.push(`AI Favor entry ${i + 1}: choose a reason.`);
+    if (!positiveInt(entry.amount)) out.push(`AI Favor entry ${i + 1}: the amount must be 1 or more.`);
+    if (!positiveInt(entry.floor)) out.push(`AI Favor entry ${i + 1}: the floor must be a whole number of 1 or more.`);
+  });
+  const favor = aiFavorParts(state);
+  if (favor && favor.total < 0) out.push(`AI Favor can’t go below 0 (${-favor.total} more spent than gained).`);
   (state.skillUps || []).forEach((entry, i) => {
     const name = String(entry.skill || '').toLowerCase();
     if (!name || !(known.has(name) || catalogByKey.has(name) || custom.has(name))) out.push(`Skill-up ${i + 1}: choose a Skill or Spell.`);
@@ -936,11 +952,20 @@ export function advancementErrors(state) {
   return out;
 }
 
-// Human: "Gain 1 AI Favor each time you level up" (p. 135) — levels gained on
-// or after the floor the Human Race was chosen.
-function humanLevelFavor(state) {
-  if (state.race !== 'Human') return 0;
-  return (state.levelUps || []).filter((x) => positiveInt(x.floor, 1) >= raceClassFloor(state)).length;
+// Signed change of one AI Favor log entry.
+export function favorChange(entry) {
+  const amount = positiveInt(entry.amount, 0);
+  return FAVOR_SPENDS.includes(entry.reason) ? -amount : amount;
+}
+
+// AI Favor (p. 112): Humans start with 1, animals spent theirs. Every level
+// gained adds 1 (user rule; it covers the Human Race's "+1 each level up").
+export function aiFavorParts(state) {
+  if (state.kind !== 'human' && state.kind !== 'animal') return null;
+  const start = state.kind === 'human' ? 1 : 0;
+  const levels = (state.levelUps || []).length;
+  const log = (state.favorLog || []).reduce((sum, entry) => sum + favorChange(entry), 0);
+  return { start, levels, log, total: start + levels + log };
 }
 
 export function evadeBuff(state) {
@@ -981,7 +1006,7 @@ export function derived(state) {
     evadeExtras: [...new Set(effects.filter((x) => x.type === 'evade').map((x) => x.text))],
     move: 20 + moveBonus,
     step: 10 + stepBonus,
-    aiFavor: state.kind === 'human' ? 1 + humanLevelFavor(state) : state.kind === 'animal' ? 0 + humanLevelFavor(state) : null,
+    aiFavor: aiFavorParts(state)?.total ?? null,
     level: level(state),
     floor: currentFloor(state),
     size: raceSize || (state.kind === 'human' ? 'Medium (4)' : sizeNames[String(state.size)] || ''),
