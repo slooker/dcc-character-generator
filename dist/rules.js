@@ -239,7 +239,6 @@ export function initialState() {
     miscJunk: '',
     healSlot: '',
     spellSlot: '',
-    potionsSlot: '',
     attackSheet: [],
     // Weapons held or in the Hotlist that the player took off the Attack rows.
     attackOff: [],
@@ -293,6 +292,13 @@ export function normalizeState(raw) {
   merged.skillUps = Array.isArray(raw.skillUps) ? raw.skillUps : [];
   merged.favorLog = Array.isArray(raw.favorLog) ? raw.favorLog : [];
   merged.gear = Array.isArray(raw.gear) ? raw.gear.map(normalizeGearItem) : [];
+  // Saves from before the starting Mana Potions were an item kept only their Hotlist slot.
+  if ('potionsSlot' in raw) {
+    if (raw.combatType === 'spell' && attacks[raw.combat] && !merged.gear.some((x) => x.id === MANA_POTIONS_ID)) {
+      merged.gear.unshift(newManaPotions(raw.potionsSlot !== '' ? `hotlist:${raw.potionsSlot}` : ''));
+    }
+    delete merged.potionsSlot;
+  }
   merged.party = normalizeParty(raw.party);
   merged.removedStarting = { ...base.removedStarting, ...(raw.removedStarting || {}) };
   merged.portrait = validPortrait(raw.portrait) ? raw.portrait : '';
@@ -1051,6 +1057,21 @@ export function carriedItems(state) {
   return [...(weapon ? [weapon] : []), ...items, ...gear, ...money];
 }
 
+// An attack Spell comes with five Standard Mana Potions (p. 111): an ordinary
+// potion item, placed in the Hotlist during creation.
+export const MANA_POTIONS_ID = 'starting-mana-potions';
+
+export function newManaPotions(location = '') {
+  return normalizeGearItem({
+    id: MANA_POTIONS_ID, kind: 'potion', name: 'Standard Mana Potion', qty: 5, location,
+    description: 'Action: drink one to fully restore Mana.',
+  });
+}
+
+export function manaPotions(state) {
+  return (state.gear || []).find((x) => x.id === MANA_POTIONS_ID) || null;
+}
+
 export function hotlist(state) {
   const slots = Array(10).fill('');
   const put = (slot, text) => {
@@ -1064,7 +1085,6 @@ export function hotlist(state) {
     const attack = attacks[state.combat];
     const range = attack.range === 5 ? 'Melee' : `${attack.range} ft`;
     put(state.spellSlot, `${state.combat} | Rank 3\n${attack.mana} Mana | ${range}\n${attack.dice}${attack.damageStat ? ` + ${attack.damageStat}` : ''} ${attack.effect}`);
-    put(state.potionsSlot, 'Standard Mana Potions x5\nAction: drink one to fully restore Mana.');
   }
   carriedItems(state).forEach((item) => {
     if (String(item.location || '').startsWith('hotlist:')) {
@@ -1079,7 +1099,6 @@ export function occupiedHotlistSlots(state) {
   if (state.healSlot !== '') result.push(Number(state.healSlot));
   if (state.combatType === 'spell') {
     if (state.spellSlot !== '') result.push(Number(state.spellSlot));
-    if (state.potionsSlot !== '') result.push(Number(state.potionsSlot));
   }
   carriedItems(state).forEach((item) => {
     if (String(item.location || '').startsWith('hotlist:')) result.push(Number(String(item.location).split(':')[1]));
@@ -1221,7 +1240,7 @@ export function errors(state) {
   if (new Set(occupied).size !== occupied.length) out.push('Use a different Hotlist slot for each spell or item entry.');
   if (state.combatType === 'spell') {
     if (state.spellSlot === '') out.push('Place the chosen attack Spell in a Hotlist slot.');
-    if (state.potionsSlot === '') out.push('Place the five Standard Mana Potions together in one Hotlist slot.');
+    if (manaPotions(state) && !manaPotions(state).location) out.push('Place the five Standard Mana Potions together in one Hotlist slot.');
   }
 
   const mandatoryAttack = state.combat && attacks[state.combat] ? state.combat : null;
@@ -1259,7 +1278,7 @@ export function stepCompletion(state) {
     stats: statValidationErrors(state).length === 0,
     story: ['trauma', 'looseEnd', 'regret'].every((key) => storyValue(state, key)),
     gear: startingCount(state, 'useful') === 1 && startingCount(state, 'weird') >= 1 && (state.combatType !== 'weapon' || state.weaponLocation),
-    hotlist: state.combatType !== 'spell' || (state.spellSlot !== '' && state.potionsSlot !== ''),
+    hotlist: state.combatType !== 'spell' || (state.spellSlot !== '' && !(manaPotions(state) && !manaPotions(state).location)),
     attacks: !state.combat || attackRowsForSheet(state).some((x) => x.name === state.combat),
     raceclass: raceClassErrors(state).length === 0,
     advancement: advancementErrors(state).length === 0,

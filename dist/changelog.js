@@ -3,6 +3,16 @@
 // merge don't). Add an entry with every commit.
 export const CHANGELOG = [
   {
+    version: '0.19',
+    date: '2026-11-25',
+    title: 'Mana Potions on the Equipment page',
+    items: [
+      'The five Standard Mana Potions an attack Spell gives are now an ordinary potion item: they’re in the Equipment page’s Items list, where you can move them, change the quantity or Use one',
+      'The Hotlist step still asks for their slot; once they’re all drunk they no longer need one',
+      'Crawlers saved earlier get their Mana Potions as an item in the same Hotlist slot',
+    ],
+  },
+  {
     version: '0.18',
     date: '2026-11-25',
     title: 'AI Favor log',

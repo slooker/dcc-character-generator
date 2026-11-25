@@ -124,6 +124,27 @@ class EquipmentRulesTests(unittest.TestCase):
         clash = "crawler({ healSlot: '1', gear: [gear('potion', { name: 'Healing Potion', location: 'hotlist:1' })] })"
         self.assertTrue(any("different Hotlist slot" in x for x in self.val(f"errors({clash})")))
 
+    def test_starting_mana_potions_are_a_potion_item(self) -> None:
+        spell = "crawler({ weaponLocation: '', combatType: 'spell', combat: 'Shock Treatment', spellSlot: '1', gear: [newManaPotions(%r)%s] })"
+        placed = spell % ("hotlist:2", "")
+        self.assertTrue(self.val(f"hotlist({placed})[1]").startswith("Standard Mana Potion x5\n"))
+        self.assertTrue(self.val(f"stepCompletion({placed}).hotlist"))
+        unplaced = spell % ("", "")
+        self.assertIn("Place the five Standard Mana Potions together in one Hotlist slot.", self.val(f"errors({unplaced})"))
+        self.assertFalse(self.val(f"stepCompletion({unplaced}).hotlist"))
+        # Drunk to the last one, then gone: nothing left to place.
+        self.assertEqual(self.val(f"hotlist(crawler({{ ...{placed}, gear: [{{ ...newManaPotions('hotlist:2'), qty: 1 }}] }}))[1]").split("\n")[0], "Standard Mana Potion")
+        gone = "crawler({ weaponLocation: '', combatType: 'spell', combat: 'Shock Treatment', spellSlot: '1', gear: [] })"
+        self.assertTrue(self.val(f"stepCompletion({gone}).hotlist"))
+
+    def test_old_saves_get_mana_potions_from_their_hotlist_slot(self) -> None:
+        old = "normalizeState({ ...crawler({ weaponLocation: '', combatType: 'spell', combat: 'Shock Treatment', spellSlot: '1' }), potionsSlot: '3' })"
+        self.assertNotIn("potionsSlot", self.val(old))
+        self.assertEqual(self.val(f"manaPotions({old})")["location"], "hotlist:3")
+        self.assertEqual(self.val(f"manaPotions({old})")["qty"], 5)
+        # New saves have no potionsSlot, so drunk potions stay gone.
+        self.assertIsNone(self.val("manaPotions(normalizeState({ ...crawler({ combatType: 'spell', combat: 'Shock Treatment' }), gear: [] }))"))
+
     def test_removed_starting_items_still_count_for_creation(self) -> None:
         state = "crawler({ items: [{ id: 'w', name: 'Rubber duck', qty: 1, kind: 'weird', location: 'inventory' }], removedStarting: { useful: 1, weird: 0 } })"
         self.assertTrue(self.val(f"stepCompletion({state}).gear"))

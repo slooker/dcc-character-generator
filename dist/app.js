@@ -6,7 +6,7 @@ import {
   findRace, findClass, eligibleRaces, eligibleClasses, raceClassRequirementIssues,
   entryEffects, splitValues, unenhancedStats, enhancedStats, currentFloor, SELECTION_RANK_CAP,
   skillUpReport, levelPoints, rankLimit, aiFavorParts, favorChange, FAVOR_GAINS, FAVOR_SPENDS, CUSTOM_SKILL_CHECKS, LEVEL_STAT_POINTS, RANK_CAP, EXTENDED_RANK_CAP, HIGH_RANK_FLOOR,
-  PORTRAIT_MAX_UPLOAD, PORTRAIT_MAX_CHARS,
+  PORTRAIT_MAX_UPLOAD, PORTRAIT_MAX_CHARS, MANA_POTIONS_ID, newManaPotions, manaPotions,
 } from './rules.js';
 import { races, classes, skillCatalog } from './races-classes.js';
 import { buildEntry } from './builds.js';
@@ -193,9 +193,6 @@ function hotlistAssignments() {
   if (state.combatType === 'spell' && state.combat) {
     if (state.spellSlot !== '') {
       push('spell', state.spellSlot, state.combat, (slot) => { state.spellSlot = String(slot); });
-    }
-    if (state.potionsSlot !== '') {
-      push('potions', state.potionsSlot, '5 Standard Mana Potions', (slot) => { state.potionsSlot = String(slot); });
     }
   }
   if (String(state.weaponLocation || '').startsWith('hotlist:')) {
@@ -572,6 +569,16 @@ function gearStep() {
   `;
 }
 
+// The starting Mana Potions' Hotlist slot, while they're unplaced or in the Hotlist.
+function manaPotionsField() {
+  const item = manaPotions(state);
+  if (!item || (item.location && !item.location.startsWith('hotlist:'))) return '';
+  const i = state.gear.indexOf(item);
+  const slot = item.location ? item.location.split(':')[1] : '';
+  const options = hotlistSlotOptions(slot, `gear:${item.id}`).replace(/value="(\d+)"/g, 'value="hotlist:$1"');
+  return `<label class="field">${item.qty} Standard Mana Potion${item.qty > 1 ? 's' : ''} <strong>required</strong><select data-bind="gear.${i}.location" data-rerender="true"><option value="">Choose slot</option>${options}</select></label>`;
+}
+
 function hotlistStep() {
   const slots = hotlist(state);
   const assignments = hotlistAssignments();
@@ -585,7 +592,7 @@ function hotlistStep() {
       <div class="fields">
         <label class="field">Heal <span class="optional">optional Hotlist placement</span><select data-bind="healSlot" data-rerender="true"><option value="">Not in Hotlist</option>${hotlistSlotOptions(state.healSlot, 'heal')}</select><small>Every crawler knows Heal. Not placing it here does not remove the Spell.</small></label>
         ${state.combatType === 'spell' ? `<label class="field">${esc(state.combat)} <strong>required</strong><select data-bind="spellSlot" data-rerender="true"><option value="">Choose slot</option>${hotlistSlotOptions(state.spellSlot, 'spell')}</select></label>
-        <label class="field">5 Standard Mana Potions <strong>required</strong><select data-bind="potionsSlot" data-rerender="true"><option value="">Choose slot</option>${hotlistSlotOptions(state.potionsSlot, 'potions')}</select></label>` : ''}
+        ${manaPotionsField()}` : ''}
       </div>
     </section>
     <section class="panel">
@@ -1314,6 +1321,12 @@ function render() {
   renderSummary();
 }
 
+// The starting Mana Potions go with an attack Spell: a new choice replaces them.
+function resetManaPotions() {
+  state.gear = state.gear.filter((x) => x.id !== MANA_POTIONS_ID);
+  if (state.combatType === 'spell' && state.combat) state.gear.unshift(newManaPotions());
+}
+
 function resetDownstreamAfterOrigin() {
   state.backgrounds = Array.from({ length: 4 }, () => ({ option: null, picks: [] }));
   state.combatType = '';
@@ -1322,7 +1335,7 @@ function resetDownstreamAfterOrigin() {
   state.attackSheet = [];
   state.weaponLocation = '';
   state.spellSlot = '';
-  state.potionsSlot = '';
+  resetManaPotions();
 }
 
 nav.addEventListener('click', (event) => {
@@ -1509,7 +1522,7 @@ main.addEventListener('click', async (event) => {
       state.customWeapon = '';
       state.weaponLocation = '';
       state.spellSlot = '';
-      state.potionsSlot = '';
+      resetManaPotions();
       state.attackSheet = [];
       saveState();
     }
@@ -1518,11 +1531,12 @@ main.addEventListener('click', async (event) => {
 
   const combat = event.target.closest('[data-combat]');
   if (combat && !combat.disabled) {
+    const changed = state.combat !== combat.dataset.combat;
     state.combat = combat.dataset.combat;
     state.customWeapon = '';
     state.weaponLocation = '';
     state.spellSlot = '';
-    state.potionsSlot = '';
+    if (changed) resetManaPotions();
     state.attackSheet = [];
     saveState();
     return render();
@@ -2107,15 +2121,13 @@ main.addEventListener('change', (event) => {
   const target = event.target;
   if (target.matches('[data-bind]')) {
     const value = target.type === 'checkbox' ? target.checked : boundValue(target);
-    const hotlistKeys = new Set(['healSlot', 'spellSlot', 'potionsSlot', 'weaponLocation']);
+    const hotlistKeys = new Set(['healSlot', 'spellSlot', 'weaponLocation']);
     if (hotlistKeys.has(target.dataset.bind)) {
       const key = target.dataset.bind === 'healSlot'
         ? 'heal'
         : target.dataset.bind === 'spellSlot'
           ? 'spell'
-          : target.dataset.bind === 'potionsSlot'
-            ? 'potions'
-            : 'weapon';
+          : 'weapon';
       if (warnIfHotlistCollision(value, key)) {
         target.value = state[target.dataset.bind] ?? '';
         return;

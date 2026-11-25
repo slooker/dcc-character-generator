@@ -290,7 +290,6 @@ class ProjectStructureTests(unittest.TestCase):
         for marker in (
             "state.healSlot = String(slot)",
             "state.spellSlot = String(slot)",
-            "state.potionsSlot = String(slot)",
             "state.weaponLocation = `hotlist:${slot}`",
             "item.location = `hotlist:${slot}`",
         ):
